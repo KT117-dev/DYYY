@@ -1652,8 +1652,8 @@ static void DYYYAddCustomViewToParent(UIView *parentView, float transparency) {
 					}
 				} else {//主页视频
 					BOOL isDirectCity = [provinceName isEqualToString:cityName];
-					BOOL isForeignCity = [text containsString:[provinceName substringToIndex:2]];
-					if(!isForeignCity){
+					BOOL isChinaCity = provinceName.length ? [text containsString:[provinceName substringToIndex:2]] : NO;
+					if(isChinaCity){
 						// 查找"IP属地"的位置，并去掉后面的内容
 					   	NSRange ipRange = [text rangeOfString:@"IP属地"];
 					    	if (ipRange.location != NSNotFound) {
