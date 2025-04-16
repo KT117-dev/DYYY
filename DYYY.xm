@@ -1652,29 +1652,7 @@ static void DYYYAddCustomViewToParent(UIView *parentView, float transparency) {
 					}
 				} else {//主页视频
 					BOOL isDirectCity = [provinceName isEqualToString:cityName];
-
-					// 1. 确保 text 和 provinceName 不为 nil
-					if (!text || !provinceName) {
-					    isForeignCity = NO;
-					    return;
-					}
-					
-					// 2. 直接遍历 text 的每一个子串，判断是否存在于 provinceName 中
-					NSInteger textLength = text.length;
-					isForeignCity = NO;
-					
-					for (NSInteger i = 0; i < textLength; i++) {
-					    for (NSInteger j = i + 1; j <= textLength; j++) {
-					        NSRange range = NSMakeRange(i, j - i);
-					        NSString *substring = [text substringWithRange:range];
-					        
-					        if ([provinceName rangeOfString:substring].location != NSNotFound) {
-					            isForeignCity = YES;
-					            break;
-					        }
-					    }
-					    if (isForeignCity) break;
-					}
+					BOOL isForeignCity = [text containsString:[provinceName substringToIndex:2]];
 					if(!isForeignCity){
 						// 查找"IP属地"的位置，并去掉后面的内容
 					   	NSRange ipRange = [text rangeOfString:@"IP属地"];
