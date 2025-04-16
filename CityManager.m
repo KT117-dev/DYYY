@@ -723,8 +723,8 @@ typedef NS_ENUM(NSInteger, CitySelectorLevel) {
             if (name) return name;
         }
     }
-
-    return nil;
+    // 如果还找不到，尝试返回省份名称（作为最后的兼容）
+    return [self getProvinceNameWithCode:cityCode];
 }
 
 // 修改 getDistrictsInCity 方法，确保逻辑更加严谨
