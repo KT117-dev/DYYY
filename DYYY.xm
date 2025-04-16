@@ -1639,34 +1639,31 @@ static void DYYYAddCustomViewToParent(UIView *parentView, float transparency) {
 		NSString *cityCode = self.model.cityCode;
 
 		if (cityCode.length > 0) {
-			NSString *cityName = [CityManager.sharedInstance getCityNameWithCode:cityCode] ?: @"";
-			NSString *provinceName = [CityManager.sharedInstance getProvinceNameWithCode:cityCode] ?: @"";
+			NSString *cityName = [CityManager.sharedInstance getCityNameWithCode:cityCode];
+			NSString *provinceName = [CityManager.sharedInstance getProvinceNameWithCode:cityCode];
 
 			if (cityName.length > 0 && ![text containsString:cityName]) {
+				//推荐页视频
 				if (!self.model.ipAttribution) {
-					BOOL isDirectCity = [provinceName isEqualToString:cityName] ||
-							    ([cityCode hasPrefix:@"11"] || [cityCode hasPrefix:@"12"] || [cityCode hasPrefix:@"31"] || [cityCode hasPrefix:@"50"]);
-
-					if (isDirectCity) {
-						label.text = [NSString stringWithFormat:@"%@  IP属地：%@", text, cityName];
+					if (provinceName isEqualToString:cityName) {//是特殊城市，如:北京，上海等
+						label.text = [NSString stringWithFormat:@"%@\nIP属地：%@", text, provinceName];
 					} else {
-						label.text = [NSString stringWithFormat:@"%@  IP属地：%@ %@", text, provinceName, cityName];
+						label.text = [NSString stringWithFormat:@"%@\nIP属地：%@ %@", text, provinceName, cityName];
 					}
-				} else {
-					BOOL isDirectCity = [provinceName isEqualToString:cityName] ||
-							    ([cityCode hasPrefix:@"11"] || [cityCode hasPrefix:@"12"] || [cityCode hasPrefix:@"31"] || [cityCode hasPrefix:@"50"]);
-
-					BOOL containsProvince = [text containsString:provinceName];
-					if (containsProvince && !isDirectCity) {
-						label.text = [NSString stringWithFormat:@"%@ %@", text, cityName];
-					} else if (containsProvince && isDirectCity) {
-						label.text = [NSString stringWithFormat:@"%@  IP属地：%@", text, cityName];
-					} else if (isDirectCity && containsProvince) {
-						label.text = text;
-					} else if (containsProvince) {
-						label.text = [NSString stringWithFormat:@"%@ %@", text, cityName];
-					} else {
-						label.text = text;
+				} else {//主页视频
+					// 查找"IP"并在其前面添加换行符
+					label.text = [text stringByReplacingOccurrencesOfString:@"IP" withString:@"\nIP"];
+					BOOL isDirectCity = [provinceName isEqualToString:cityName];
+					BOOL isForeignCity = [text rangeOfString:provinceName].location != NSNotFound;
+					if(!isForeignCity){//国外城市不处理
+						// 删除原来的“IP属地：”后面的文本
+						label.text = [text stringByReplacingOccurrencesOfString:@"IP属地：.*" withString:@"" options:NSRegularExpressionSearch range:NSMakeRange(0, text.length)];
+						if(isDirectCity){
+							label.text = [NSString stringWithFormat:@"%@\nIP属地：%@", text, provinceName];
+						}
+						else{
+							label.text = [NSString stringWithFormat:@"%@\nIP属地：%@ %@", text, provinceName, cityName];
+						}
 					}
 				}
 			}
