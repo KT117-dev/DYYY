@@ -1642,7 +1642,7 @@ static void DYYYAddCustomViewToParent(UIView *parentView, float transparency) {
 			NSString *cityName = [CityManager.sharedInstance getCityNameWithCode:cityCode];
 			NSString *provinceName = [CityManager.sharedInstance getProvinceNameWithCode:cityCode];
 			if (cityName.length > 0 && ![text containsString:cityName]) {
-				if (!self.model.ipAttribution) {
+				if (!self.model.ipAttribution && cityCode.length == 6) {
 					if ([provinceName isEqualToString:cityName]) {//是特殊城市，如:北京，上海等
 						label.text = [NSString stringWithFormat:@"%@\nIP属地：%@", text, provinceName];
 					} else {
