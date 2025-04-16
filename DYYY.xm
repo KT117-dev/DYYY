@@ -1658,8 +1658,9 @@ static void DYYYAddCustomViewToParent(UIView *parentView, float transparency) {
 						NSRange range = [text rangeOfString:@"IP属地："];
 						if (range.location != NSNotFound) {
 						    // 找到"IP属地："后，截取文本并保留"IP属地："之前的部分
-						    label.text = [text substringToIndex:range.location];
+						    text = [text substringToIndex:range.location];
 						}
+						label.text=text;
 						if(isDirectCity){
 							label.text = [NSString stringWithFormat:@"%@\nIP属地：%@", text, provinceName];
 						}
