@@ -1652,11 +1652,8 @@ static void DYYYAddCustomViewToParent(UIView *parentView, float transparency) {
 					}
 				} else {//主页视频
 					BOOL isDirectCity = [provinceName isEqualToString:cityName];
-					// 从text中提取省份部分（例如："ip属地：重庆" → "重庆"）
-					NSString *provincePart = [[text componentsSeparatedByString:@"："] lastObject];
-					provincePart = [provincePart stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]; // 去除两端空格
-					// 判断省份部分是否存在于provinceName中
-					BOOL isForeignCity = [provinceName containsString:provincePart];
+
+					BOOL isForeignCity = 1;
 					if(!isForeignCity){
 						// 查找"IP属地"的位置，并去掉后面的内容
 					   	NSRange ipRange = [text rangeOfString:@"IP属地"];
