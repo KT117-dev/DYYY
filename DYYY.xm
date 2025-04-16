@@ -1651,11 +1651,9 @@ static void DYYYAddCustomViewToParent(UIView *parentView, float transparency) {
 						label.text = [NSString stringWithFormat:@"%@\nIP属地：%@ %@", text, provinceName, cityName];
 					}
 				} else {//主页视频
-					// 查找"IP"并在其前面添加换行符
-					label.text = [text stringByReplacingOccurrencesOfString:@"IP" withString:@"\nIP"];
 					BOOL isDirectCity = [provinceName isEqualToString:cityName];
 					BOOL isForeignCity = [text rangeOfString:provinceName].location != NSNotFound;
-					if(!isForeignCity){//国外城市不处理
+					if(!isForeignCity){
 						// 删除原来的“IP属地：”后面的文本
 						label.text = [text stringByReplacingOccurrencesOfString:@"IP属地：.*" withString:@"" options:NSRegularExpressionSearch range:NSMakeRange(0, text.length)];
 						if(isDirectCity){
@@ -1664,6 +1662,10 @@ static void DYYYAddCustomViewToParent(UIView *parentView, float transparency) {
 						else{
 							label.text = [NSString stringWithFormat:@"%@\nIP属地：%@ %@", text, provinceName, cityName];
 						}
+					}
+					else{
+						// 查找"IP"并在其前面添加换行符
+						label.text = [text stringByReplacingOccurrencesOfString:@"IP" withString:@"\nIP"];
 					}
 				}
 			}
