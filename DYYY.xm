@@ -1652,10 +1652,14 @@ static void DYYYAddCustomViewToParent(UIView *parentView, float transparency) {
 					}
 				} else {//主页视频
 					BOOL isDirectCity = [provinceName isEqualToString:cityName];
-					BOOL isForeignCity = [text rangeOfString:provinceName].location != NSNotFound;
+					BOOL isForeignCity = [provinceName rangeOfString:text].location != NSNotFound;
 					if(!isForeignCity){
-						// 删除原来的“IP属地：”后面的文本
-						label.text = [text stringByReplacingOccurrencesOfString:@"IP属地：.*" withString:@"" options:NSRegularExpressionSearch range:NSMakeRange(0, text.length)];
+						// 查找"IP属地："的位置
+						NSRange range = [text rangeOfString:@"IP属地："];
+						if (range.location != NSNotFound) {
+						    // 找到"IP属地："后，截取文本并保留"IP属地："之前的部分
+						    label.text = [text substringToIndex:range.location];
+						}
 						if(isDirectCity){
 							label.text = [NSString stringWithFormat:@"%@\nIP属地：%@", text, provinceName];
 						}
