@@ -1691,6 +1691,9 @@ static void DYYYAddCustomViewToParent(UIView *parentView, float transparency) {
 	if (labelColor.length > 0) {
 		label.textColor = [DYYYManager colorWithHexString:labelColor];
 	}
+	 // 设置多行显示
+   	label.numberOfLines = 0;  // 允许显示多行
+   	label.lineBreakMode = NSLineBreakByWordWrapping;  // 根据单词换行
 	return label;
 }
 
