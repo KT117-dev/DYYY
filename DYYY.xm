@@ -1645,7 +1645,7 @@ static void DYYYAddCustomViewToParent(UIView *parentView, float transparency) {
 			if (cityName.length > 0 && ![text containsString:cityName]) {
 				//推荐页视频
 				if (!self.model.ipAttribution) {
-					if (provinceName isEqualToString:cityName) {//是特殊城市，如:北京，上海等
+					if ([provinceName isEqualToString:cityName]) {//是特殊城市，如:北京，上海等
 						label.text = [NSString stringWithFormat:@"%@\nIP属地：%@", text, provinceName];
 					} else {
 						label.text = [NSString stringWithFormat:@"%@\nIP属地：%@ %@", text, provinceName, cityName];
