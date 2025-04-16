@@ -14,6 +14,7 @@
 + (instancetype)sharedInstance;
 
 // 数据获取方法
+- (NSString *)MygetProvinceNameWithCode:(NSString *)provinceCode;
 - (NSString *)getProvinceNameWithCode:(NSString *)provinceCode;
 - (NSString *)getCityNameWithCode:(NSString *)cityCode;
 - (NSDictionary *)getDistrictsInCity:(NSString *)parentCode;
