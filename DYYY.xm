@@ -1638,7 +1638,7 @@ static void DYYYAddCustomViewToParent(UIView *parentView, float transparency) {
 		NSString *text = label.text;
 		NSString *cityCode = self.model.cityCode;
 
-		if (cityCode.length > 0 && cityCode.length < 7) {
+		if (cityCode.length > 0) {
 			NSString *cityName = [CityManager.sharedInstance getCityNameWithCode:cityCode];
 			NSString *provinceName = [CityManager.sharedInstance getProvinceNameWithCode:cityCode];
 
