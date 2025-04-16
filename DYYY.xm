@@ -1638,7 +1638,7 @@ static void DYYYAddCustomViewToParent(UIView *parentView, float transparency) {
 		NSString *text = label.text;
 		NSString *cityCode = self.model.cityCode;
 
-		if (cityCode.length > 0) {
+		if (cityCode.length > 0 && cityCode.length < 7) {
 			NSString *cityName = [CityManager.sharedInstance getCityNameWithCode:cityCode];
 			NSString *provinceName = [CityManager.sharedInstance getProvinceNameWithCode:cityCode];
 
@@ -1654,12 +1654,6 @@ static void DYYYAddCustomViewToParent(UIView *parentView, float transparency) {
 					BOOL isDirectCity = [provinceName isEqualToString:cityName];
 					BOOL isForeignCity = [provinceName rangeOfString:text].location != NSNotFound;
 					if(!isForeignCity){
-						// 查找"IP属地："的位置
-						NSRange range = [text rangeOfString:@"IP属地："];
-						if (range.location != NSNotFound) {
-						    // 找到"IP属地："后，截取文本并保留"IP属地："之前的部分
-						    text = [text substringToIndex:range.location];
-						}
 						label.text=text;
 						if(isDirectCity){
 							label.text = [NSString stringWithFormat:@"%@\nIP属地：%@", text, provinceName];
