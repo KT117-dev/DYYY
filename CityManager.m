@@ -668,6 +668,16 @@ typedef NS_ENUM(NSInteger, CitySelectorLevel) {
 
 // --- Getter 方法 ---
 
+// 根据省份代码获取省份名称(基本方法)
+- (NSString *)MygetProvinceNameWithCode:(NSString *)provinceCode {
+    // 优先匹配6位代码
+    if (provinceCode.length == 6) {
+        NSString *name = _provincesDict[provinceCode];
+        if (name) return name;
+    }
+    return nil; // 未找到
+}
+
 // 根据省份代码获取省份名称
 - (NSString *)getProvinceNameWithCode:(NSString *)provinceCode {
     // 优先匹配6位代码
