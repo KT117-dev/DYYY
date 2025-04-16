@@ -1654,7 +1654,6 @@ static void DYYYAddCustomViewToParent(UIView *parentView, float transparency) {
 					BOOL isDirectCity = [provinceName isEqualToString:cityName];
 					BOOL isForeignCity = [provinceName rangeOfString:text].location != NSNotFound;
 					if(!isForeignCity){
-						label.text=text;
 						if(isDirectCity){
 							label.text = [NSString stringWithFormat:@"%@\nIP属地：%@", text, provinceName];
 						}
