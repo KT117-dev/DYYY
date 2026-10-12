@@ -85,6 +85,9 @@ NS_ASSUME_NONNULL_BEGIN
  */
 + (BOOL)containsSubviewOfClass:(Class)targetClass inContainer:(id)container;
 
+/** 推荐流直播预览复用昵称文案/右侧缩放；嵌套容器只缩放一次，并可恢复原始变换。 */
++ (void)applyLivePreStreamLayoutToStackView:(UIView *)stackView upwardOffset:(CGFloat)upwardOffset;
+
 + (void)applyBlurEffectToView:(UIView *)view transparency:(float)userTransparency blurViewTag:(NSInteger)tag;
 + (void)clearBackgroundRecursivelyInView:(UIView *)view;
 

@@ -12002,10 +12002,6 @@ static void DYYYRemoveKeyboardObserver(void) {
 
 %end
 
-static Class GuideViewClass = nil;
-static Class MuteViewClass = nil;
-static Class TagViewClass = nil;
-
 %hook AWEElementStackView
 
 - (void)setAlpha:(CGFloat)alpha {
@@ -12093,12 +12089,6 @@ static Class TagViewClass = nil;
     }
 }
 
-+ (void)initialize {
-    GuideViewClass = NSClassFromString(@"AWELivePrestreamGuideView");
-    MuteViewClass = NSClassFromString(@"AFDCancelMuteAwemeView");
-    TagViewClass = NSClassFromString(@"AWELiveFeedLabelTagView");
-}
-
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     dyyyCommentViewVisible = NO;
@@ -12115,6 +12105,9 @@ static Class TagViewClass = nil;
 
 - (void)didMoveToWindow {
     %orig;
+    if (!self.window) {
+        [DYYYUtils applyLivePreStreamLayoutToStackView:self upwardOffset:0];
+    }
     if (self.window) {
         [self dyyy_applyGlobalTransparency];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(dyyy_applyGlobalTransparency) name:kDYYYGlobalTransparencyDidChangeNotification object:nil];
@@ -12133,51 +12126,13 @@ static Class TagViewClass = nil;
 
     UIViewController *viewController = [DYYYUtils firstAvailableViewControllerFromView:self];
 
-    if ([viewController isKindOfClass:%c(AWELiveNewPreStreamViewController)]) {
-        const BOOL shouldShiftUp = DYYYGetBool(@"DYYYEnableFullScreen");
-        const CGFloat labelScaleValue = DYYYGetFloat(@"DYYYNicknameScale");
-        const CGFloat targetLabelScale = (labelScaleValue != 0.0) ? MAX(0.01, labelScaleValue) : 1.0;
-        const CGFloat elementScaleValue = DYYYGetFloat(@"DYYYElementScale");
-        const CGFloat targetElementScale = (elementScaleValue != 0.0) ? MAX(0.01, elementScaleValue) : 1.0;
-
-        CGAffineTransform targetTransform = CGAffineTransformIdentity;
-        CGFloat boundsWidth = self.bounds.size.width;
-        CGFloat currentScale = 1.0;
-        CGFloat targetHeight, tx, ty = 0;
-        UIWindow *keyWindow = [DYYYUtils getActiveWindow];
-        if (keyWindow && keyWindow.safeAreaInsets.bottom == 0) {
-            targetHeight = gCurrentTabBarHeight - originalTabBarHeight;
-        } else {
-            targetHeight = gCurrentTabBarHeight;
-        }
-
-        if ([DYYYUtils containsSubviewOfClass:GuideViewClass inContainer:self]) {
-            currentScale = targetLabelScale;
-            tx = 0; // 中对齐
-        } else if ([DYYYUtils containsSubviewOfClass:MuteViewClass inContainer:self]) {
-            currentScale = targetElementScale;
-            tx = (boundsWidth - boundsWidth * currentScale) / 2; // 右对齐
-        } else if ([DYYYUtils containsSubviewOfClass:TagViewClass inContainer:self]) {
-            currentScale = targetLabelScale;
-            tx = (boundsWidth - boundsWidth * currentScale) / -2; // 左对齐
-        }
-
-        NSArray *subviews = [self.subviews copy];
-        for (UIView *view in subviews) {
-            CGFloat viewHeight = view.bounds.size.height;
-            ty += (viewHeight - viewHeight * currentScale) / 2;
-        }
-
-        if (shouldShiftUp) {
-            ty -= targetHeight;
-        }
-
-        targetTransform = CGAffineTransformMake(currentScale, 0, 0, currentScale, tx, ty);
-
-        if (!CGAffineTransformEqualToTransform(self.transform, targetTransform)) {
-            self.transform = targetTransform;
-        }
+    CGFloat upwardOffset = 0;
+    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
+        UIWindow *window = self.window ?: [DYYYUtils getActiveWindow];
+        upwardOffset = (window && window.safeAreaInsets.bottom == 0)
+            ? gCurrentTabBarHeight - originalTabBarHeight : gCurrentTabBarHeight;
     }
+    [DYYYUtils applyLivePreStreamLayoutToStackView:self upwardOffset:upwardOffset];
 
     if ([viewController isKindOfClass:%c(AWEPlayInteractionViewController)]) {
         NSString *label = self.accessibilityLabel ?: @"";
@@ -12294,12 +12249,6 @@ static Class TagViewClass = nil;
 
 %hook IESLiveStackView
 
-+ (void)initialize {
-    GuideViewClass = NSClassFromString(@"AWELivePrestreamGuideView");
-    MuteViewClass = NSClassFromString(@"AFDCancelMuteAwemeView");
-    TagViewClass = NSClassFromString(@"AWELiveFeedLabelTagView");
-}
-
 - (void)setAlpha:(CGFloat)alpha {
     BOOL isApplyingGlobal = (dyyyGlobalTransparencyMutationDepth > 0);
     if (!isApplyingGlobal) {
@@ -12329,6 +12278,9 @@ static Class TagViewClass = nil;
 
 - (void)didMoveToWindow {
     %orig;
+    if (!self.window) {
+        [DYYYUtils applyLivePreStreamLayoutToStackView:self upwardOffset:0];
+    }
     if (self.window) {
         [self dyyy_applyGlobalTransparency];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(dyyy_applyGlobalTransparency) name:kDYYYGlobalTransparencyDidChangeNotification object:nil];
@@ -12345,52 +12297,13 @@ static Class TagViewClass = nil;
 - (void)layoutSubviews {
     %orig;
 
-    UIViewController *viewController = [DYYYUtils firstAvailableViewControllerFromView:self];
-
-    if ([viewController isKindOfClass:%c(AWELiveNewPreStreamViewController)]) {
-        const BOOL shouldShiftUp = DYYYGetBool(@"DYYYEnableFullScreen");
-        const CGFloat labelScaleValue = DYYYGetFloat(@"DYYYNicknameScale");
-        const CGFloat targetLabelScale = (labelScaleValue != 0.0) ? MAX(0.01, labelScaleValue) : 1.0;
-        const CGFloat elementScaleValue = DYYYGetFloat(@"DYYYElementScale");
-        const CGFloat targetElementScale = (elementScaleValue != 0.0) ? MAX(0.01, elementScaleValue) : 1.0;
-
-        CGAffineTransform targetTransform = CGAffineTransformIdentity;
-        CGFloat boundsWidth = self.bounds.size.width;
-        CGFloat currentScale = 1.0;
-        CGFloat targetHeight, tx, ty = 0;
-        UIWindow *keyWindow = [DYYYUtils getActiveWindow];
-        if (keyWindow && keyWindow.safeAreaInsets.bottom == 0) {
-            targetHeight = gCurrentTabBarHeight - originalTabBarHeight;
-        } else {
-            targetHeight = gCurrentTabBarHeight;
-        }
-
-        if ([DYYYUtils containsSubviewOfClass:GuideViewClass inContainer:self]) {
-            currentScale = targetLabelScale;
-            tx = 0; // 中对齐
-        } else if ([DYYYUtils containsSubviewOfClass:MuteViewClass inContainer:self]) {
-            currentScale = targetElementScale;
-            tx = (boundsWidth - boundsWidth * currentScale) / 2; // 右对齐
-        } else if ([DYYYUtils containsSubviewOfClass:TagViewClass inContainer:self]) {
-            currentScale = targetLabelScale;
-            tx = (boundsWidth - boundsWidth * currentScale) / -2; // 左对齐
-        }
-
-        NSArray *subviews = [self.subviews copy];
-        for (UIView *view in subviews) {
-            CGFloat viewHeight = view.bounds.size.height;
-            ty += (viewHeight - viewHeight * currentScale) / 2;
-        }
-
-        if (shouldShiftUp) {
-            ty -= targetHeight;
-        }
-        targetTransform = CGAffineTransformMakeTranslation(0, -20);
-
-        if (!CGAffineTransformEqualToTransform(self.transform, targetTransform)) {
-            self.transform = targetTransform;
-        }
+    CGFloat upwardOffset = 0;
+    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
+        UIWindow *window = self.window ?: [DYYYUtils getActiveWindow];
+        upwardOffset = (window && window.safeAreaInsets.bottom == 0)
+            ? gCurrentTabBarHeight - originalTabBarHeight : gCurrentTabBarHeight;
     }
+    [DYYYUtils applyLivePreStreamLayoutToStackView:self upwardOffset:upwardOffset];
 }
 
 %end

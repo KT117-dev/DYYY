@@ -738,6 +738,8 @@ static void DYYYBuildSettingsSearchIndexIfNeeded(NSArray<AWESettingItemModel *> 
 
 %end
 
+// 已停用天气替换入口，保留抖音原始侧边栏天气区域。
+/*
 // 隐藏掉天气Label
 %hook AWELeftSideBarWeatherLabel
 - (id)initWithFrame:(CGRect)frame {
@@ -859,6 +861,8 @@ static void DYYYBuildSettingsSearchIndexIfNeeded(NSArray<AWESettingItemModel *> 
     showDYYYSettingsVC(targetVC, hasAgreed);
 }
 %end
+
+*/
 
 %hook AWELeftSideBarEntranceView
 - (void)leftSideBarEntranceViewTapped:(UITapGestureRecognizer *)gesture {

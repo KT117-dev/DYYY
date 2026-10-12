@@ -973,6 +973,116 @@ static void DYYYApplyDisplayLocationToLabel(UILabel *label, NSString *displayLoc
     return [self findSubviewOfClass:targetClass inContainer:container] != nil;
 }
 
+#pragma mark - 推荐流直播预览布局
+
++ (NSString *)livePreStreamScaleKeyForStackView:(UIView *)view {
+    // 右侧优先识别，避免把静音/头像容器当成左侧文案。
+    if ([view.accessibilityLabel isEqualToString:@"right"] ||
+        [self containsSubviewOfClass:NSClassFromString(@"AFDCancelMuteAwemeView") inContainer:view] ||
+        [self containsSubviewOfClass:NSClassFromString(@"AWEPlayInteractionUserAvatarView") inContainer:view]) {
+        return @"DYYYElementScale";
+    }
+    if ([view.accessibilityLabel isEqualToString:@"left"] ||
+        [self containsSubviewOfClass:NSClassFromString(@"AWELivePrestreamGuideView") inContainer:view] ||
+        [self containsSubviewOfClass:NSClassFromString(@"AWELiveFeedLabelTagView") inContainer:view] ||
+        [self containsSubviewOfClass:NSClassFromString(@"AWELiveFeedStatusLabel") inContainer:view] ||
+        [self containsSubviewOfClass:NSClassFromString(@"AWEUserNameLabel") inContainer:view]) {
+        return @"DYYYNicknameScale";
+    }
+    return nil;
+}
+
++ (void)applyLivePreStreamLayoutToStackView:(UIView *)stackView upwardOffset:(CGFloat)upwardOffset {
+    if (!stackView) return;
+    if (![NSThread isMainThread]) {
+        __weak UIView *weakView = stackView;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIView *view = weakView;
+            if (view) [self applyLivePreStreamLayoutToStackView:view upwardOffset:upwardOffset];
+        });
+        return;
+    }
+
+    static char pendingKey, offsetKey, transformStateKey;
+    // 普通视频仍走原有 Hook，仅处理直播预览或需要恢复的复用视图。
+    if (!objc_getAssociatedObject(stackView, &transformStateKey) &&
+        ![self findAncestorResponderOfClass:NSClassFromString(@"AWELiveNewPreStreamViewController") fromView:stackView]) {
+        return;
+    }
+    objc_setAssociatedObject(stackView, &offsetKey, @(upwardOffset), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if ([objc_getAssociatedObject(stackView, &pendingKey) boolValue]) return;
+    objc_setAssociatedObject(stackView, &pendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UIView *weakView = stackView;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIView *view = weakView;
+        if (!view) return;
+        objc_setAssociatedObject(view, &pendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+        NSDictionary *state = objc_getAssociatedObject(view, &transformStateKey);
+        CGAffineTransform currentTransform = view.transform;
+        CGAffineTransform baseTransform = currentTransform;
+        if (state && CGAffineTransformEqualToTransform(currentTransform, [state[@"applied"] CGAffineTransformValue])) {
+            baseTransform = [state[@"base"] CGAffineTransformValue];
+        }
+
+        Class liveClass = NSClassFromString(@"AWELiveNewPreStreamViewController");
+        UIViewController *liveController = (UIViewController *)[self findAncestorResponderOfClass:liveClass fromView:view];
+        if (!liveController || !view.window) {
+            if (state && !CGAffineTransformEqualToTransform(currentTransform, baseTransform)) {
+                view.transform = baseTransform;
+            }
+            objc_setAssociatedObject(view, &transformStateKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            return;
+        }
+
+        Class elementStackClass = NSClassFromString(@"AWEElementStackView");
+        Class liveStackClass = NSClassFromString(@"IESLiveStackView");
+        NSString *scaleKey = [self livePreStreamScaleKeyForStackView:view];
+        // 两种 stack 会相互嵌套，交给最内层包含目标组件的 stack 缩放。
+        NSArray *nestedStacks = [[self findAllSubviewsOfClass:elementStackClass inContainer:view]
+            arrayByAddingObjectsFromArray:[self findAllSubviewsOfClass:liveStackClass inContainer:view]];
+        for (UIView *nestedView in nestedStacks) {
+            if (nestedView != view && [self livePreStreamScaleKeyForStackView:nestedView]) {
+                scaleKey = nil;
+                break;
+            }
+        }
+
+        CGFloat scale = scaleKey ? [[[NSUserDefaults standardUserDefaults] objectForKey:scaleKey] floatValue] : 1.0;
+        if (!isfinite(scale) || scale <= 0) scale = 1.0;
+        CGFloat width = view.bounds.size.width;
+        CGFloat tx = (width - width * scale) / 2;
+        if ([scaleKey isEqualToString:@"DYYYNicknameScale"]) tx = -tx;
+        CGFloat ty = 0;
+        for (UIView *subview in view.subviews) {
+            if (!subview.hidden) ty += subview.bounds.size.height * (1 - scale) / 2;
+        }
+
+        // 全屏避让只加在最外层 stack，不能随嵌套层数重复上移。
+        BOOL hasParentStack = NO;
+        for (UIView *parent = view.superview; parent && parent != liveController.view; parent = parent.superview) {
+            if ([parent isKindOfClass:elementStackClass] || [parent isKindOfClass:liveStackClass]) {
+                hasParentStack = YES;
+                break;
+            }
+        }
+        if (!hasParentStack) ty -= [objc_getAssociatedObject(view, &offsetKey) doubleValue];
+
+        CGAffineTransform localTransform = CGAffineTransformMake(scale, 0, 0, scale, tx, ty);
+        CGAffineTransform targetTransform = CGAffineTransformConcat(baseTransform, localTransform);
+        if (!CGAffineTransformEqualToTransform(currentTransform, targetTransform)) {
+            view.transform = targetTransform;
+        }
+        if (CGAffineTransformIsIdentity(localTransform)) {
+            objc_setAssociatedObject(view, &transformStateKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        } else {
+            objc_setAssociatedObject(view, &transformStateKey,
+                @{@"base" : [NSValue valueWithCGAffineTransform:baseTransform],
+                  @"applied" : [NSValue valueWithCGAffineTransform:targetTransform]}, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    });
+}
+
 + (void)applyBlurEffectToView:(UIView *)view transparency:(float)userTransparency blurViewTag:(NSInteger)tag {
     if (!view)
         return;
