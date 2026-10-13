@@ -16,6 +16,7 @@
   - `DYYYSettingsHelper.(h/m)`：设置项依赖、入口、协议弹窗。
 - **业务/下载**
   - `DYYYManager.(h/m)`：下载、合成、任务管理、授权。
+  - `DYYYVideoPlaybackGuard.(h/m)`：当前未公开视频的临时观看保护、检查结果与缓存范围控制。
   - `CityManager.(h/m)`：城市映射与 GeoNames 查询。
   - `AWMSafeDispatchTimer.(h/m)`：安全延时定时器。
 - **通用工具/常量**

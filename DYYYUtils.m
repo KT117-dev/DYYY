@@ -878,6 +878,63 @@ static void DYYYApplyDisplayLocationToLabel(UILabel *label, NSString *displayLoc
     return nil;
 }
 
++ (BOOL)isAwemeDetailVideoController:(UIViewController *)controller {
+    if (!controller || ![NSThread isMainThread]) {
+        return NO;
+    }
+
+    Class detailCellClass = NSClassFromString(@"AWEAwemeDetailCellViewController");
+    Class detailTableClass = NSClassFromString(@"AWEAwemeDetailTableViewController");
+    Class searchTableClass = NSClassFromString(@"AWESearchVideoFeedTableViewController");
+    Class interactionClass = NSClassFromString(@"AWEPlayInteractionViewController");
+    UIViewController *owner = nil;
+    NSString *referString = nil;
+    if (interactionClass && [controller isKindOfClass:interactionClass] &&
+        [controller respondsToSelector:@selector(referString)]) {
+        referString = ((AWEPlayInteractionViewController *)controller).referString;
+        if ([controller respondsToSelector:@selector(awemeBaseViewController)]) {
+            owner = ((AWEPlayInteractionViewController *)controller).awemeBaseViewController;
+        }
+    } else if (detailTableClass && [controller isKindOfClass:detailTableClass] &&
+               [controller respondsToSelector:@selector(referString)]) {
+        referString = ((AWEAwemeDetailTableViewController *)controller).referString;
+    }
+    if ([referString hasPrefix:@"general_search"] || [referString hasPrefix:@"search"]) {
+        return NO;
+    }
+
+    // 搜索播放页继承详情列表且复用详情 cell，必须检查完整父链后才能确认归属。
+    // 两条父链各最多 8 层，不扫描子视图，也不持有页面或模型。
+    BOOL isDetailVideo = NO;
+    for (NSUInteger chain = 0; chain < 2; chain++) {
+        UIViewController *cursor = chain == 0 ? controller : owner;
+        for (NSUInteger depth = 0; cursor && depth < 8; depth++, cursor = cursor.parentViewController) {
+            if (searchTableClass && [cursor isKindOfClass:searchTableClass]) {
+                return NO;
+            }
+            if ((detailCellClass && [cursor isKindOfClass:detailCellClass]) ||
+                (detailTableClass && [cursor isKindOfClass:detailTableClass])) {
+                isDetailVideo = YES;
+            }
+        }
+    }
+    return isDetailVideo;
+}
+
++ (CGRect)fullHeightFrame:(CGRect)frame inContainerBounds:(CGRect)containerBounds {
+    if (isfinite(containerBounds.origin.x) && isfinite(containerBounds.origin.y) &&
+        isfinite(containerBounds.size.width) && isfinite(containerBounds.size.height) &&
+        containerBounds.size.width > 0 && containerBounds.size.height > 0 &&
+        isfinite(frame.origin.x) && isfinite(frame.origin.y) &&
+        isfinite(frame.size.width) && isfinite(frame.size.height) && frame.size.height > 0 &&
+        fabs(frame.origin.x - containerBounds.origin.x) <= 0.5 &&
+        fabs(frame.origin.y - containerBounds.origin.y) <= 0.5 &&
+        fabs(frame.size.width - containerBounds.size.width) <= 0.5) {
+        frame.size.height = containerBounds.size.height;
+    }
+    return frame;
+}
+
 + (UIViewController *)findViewControllerOfClass:(Class)targetClass inViewController:(UIViewController *)vc {
     if (!targetClass || !vc)
         return nil;
@@ -975,6 +1032,49 @@ static void DYYYApplyDisplayLocationToLabel(UILabel *label, NSString *displayLoc
 
 #pragma mark - 推荐流直播预览布局
 
++ (void)refreshLivePreStreamLayoutForController:(UIViewController *)controller {
+    if (!controller) return;
+    if (![NSThread isMainThread]) {
+        __weak UIViewController *weakController = controller;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIViewController *liveController = weakController;
+            if (liveController) [self refreshLivePreStreamLayoutForController:liveController];
+        });
+        return;
+    }
+
+    Class liveClass = NSClassFromString(@"AWELiveNewPreStreamViewController");
+    if (!liveClass || ![controller isKindOfClass:liveClass]) return;
+    static char pendingKey;
+    if ([objc_getAssociatedObject(controller, &pendingKey) boolValue]) return;
+    objc_setAssociatedObject(controller, &pendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UIViewController *weakController = controller;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *liveController = weakController;
+        if (!liveController) return;
+        objc_setAssociatedObject(liveController, &pendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        UIView *rootView = liveController.viewIfLoaded;
+        if (!rootView.window) return;
+        for (UIView *ancestor = rootView; ancestor; ancestor = ancestor.superview) {
+            if (ancestor.hidden) return;
+        }
+
+        Class elementStackClass = NSClassFromString(@"AWEElementStackView");
+        Class liveStackClass = NSClassFromString(@"IESLiveStackView");
+        NSMutableArray<UIView *> *views = [NSMutableArray arrayWithObject:rootView];
+        while (views.count > 0) {
+            UIView *view = views.lastObject;
+            [views removeLastObject];
+            if (view.hidden) continue;
+            if ((elementStackClass && [view isKindOfClass:elementStackClass]) ||
+                (liveStackClass && [view isKindOfClass:liveStackClass])) {
+                [view dyyy_refreshLivePreStreamLayout];
+            }
+            [views addObjectsFromArray:view.subviews];
+        }
+    });
+}
+
 + (NSString *)livePreStreamScaleKeyForStackView:(UIView *)view {
     // 右侧优先识别，避免把静音/头像容器当成左侧文案。
     if ([view.accessibilityLabel isEqualToString:@"right"] ||
@@ -1003,7 +1103,9 @@ static void DYYYApplyDisplayLocationToLabel(UILabel *label, NSString *displayLoc
         return;
     }
 
-    static char pendingKey, offsetKey, transformStateKey;
+    static char pendingKey, offsetKey, transformStateKey, applyingKey;
+    // 自己写 transform 不再触发下一轮刷新，防止 setter Hook 形成更新循环。
+    if ([objc_getAssociatedObject(stackView, &applyingKey) boolValue]) return;
     // 普通视频仍走原有 Hook，仅处理直播预览或需要恢复的复用视图。
     if (!objc_getAssociatedObject(stackView, &transformStateKey) &&
         ![self findAncestorResponderOfClass:NSClassFromString(@"AWELiveNewPreStreamViewController") fromView:stackView]) {
@@ -1029,7 +1131,12 @@ static void DYYYApplyDisplayLocationToLabel(UILabel *label, NSString *displayLoc
         UIViewController *liveController = (UIViewController *)[self findAncestorResponderOfClass:liveClass fromView:view];
         if (!liveController || !view.window) {
             if (state && !CGAffineTransformEqualToTransform(currentTransform, baseTransform)) {
-                view.transform = baseTransform;
+                objc_setAssociatedObject(view, &applyingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                @try {
+                    view.transform = baseTransform;
+                } @finally {
+                    objc_setAssociatedObject(view, &applyingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                }
             }
             objc_setAssociatedObject(view, &transformStateKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             return;
@@ -1071,14 +1178,19 @@ static void DYYYApplyDisplayLocationToLabel(UILabel *label, NSString *displayLoc
         CGAffineTransform localTransform = CGAffineTransformMake(scale, 0, 0, scale, tx, ty);
         CGAffineTransform targetTransform = CGAffineTransformConcat(baseTransform, localTransform);
         if (!CGAffineTransformEqualToTransform(currentTransform, targetTransform)) {
-            view.transform = targetTransform;
+            objc_setAssociatedObject(view, &applyingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            @try {
+                view.transform = targetTransform;
+            } @finally {
+                objc_setAssociatedObject(view, &applyingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
         }
         if (CGAffineTransformIsIdentity(localTransform)) {
             objc_setAssociatedObject(view, &transformStateKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         } else {
             objc_setAssociatedObject(view, &transformStateKey,
                 @{@"base" : [NSValue valueWithCGAffineTransform:baseTransform],
-                  @"applied" : [NSValue valueWithCGAffineTransform:targetTransform]}, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                  @"applied" : [NSValue valueWithCGAffineTransform:view.transform]}, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
     });
 }

@@ -28,11 +28,13 @@
 #import "DYYYSettingViewController.h"
 #import "DYYYToast.h"
 #import "DYYYUtils.h"
+#import "DYYYVideoPlaybackGuard.h"
 
 static CGFloat gStartY = 0.0;
 static CGFloat gStartVal = 0.0;
 static DYEdgeMode gMode = DYEdgeModeNone;
 static __weak UICollectionView *gFeedCV = nil;
+static BOOL dyyyVideoMixBarVisibilityHookEnabled = NO;
 
 static const CGFloat kInvalidAlpha = -1.0;
 static const CGFloat kInvalidHeight = -1.0;
@@ -9047,10 +9049,10 @@ static NSHashTable *processedParentViews = nil;
 	%orig;
 }
 
-// 屏蔽底部合集（只对推荐页生效）
+// 旧版本回退：没有可用的合集显示接口时，沿用推荐页屏蔽逻辑。
 - (id)mixInfo {
 	BOOL DYYYHideTemplateVideo = DYYYGetBool(@"DYYYHideTemplateVideo");
-	if (DYYYHideTemplateVideo && [self.referString isEqualToString:@"homepage_hot"]) {
+	if (!dyyyVideoMixBarVisibilityHookEnabled && DYYYHideTemplateVideo && [self.referString isEqualToString:@"homepage_hot"]) {
 		return nil;
 	}
 	return %orig;
@@ -9556,6 +9558,124 @@ static NSHashTable *processedParentViews = nil;
     }
     %orig(text);
 }
+%end
+
+// 推荐、搜索及详情页共用合集底栏的显示判断，保留作品的合集数据。
+%group DYYYVideoMixBarVisibilityGroup
+%hook AWEPlayInteractionNewMixVideoInfoElement
+- (BOOL)shouldAppearWithData:(AWEAwemeModel *)data {
+    if (!DYYYGetBool(@"DYYYHideTemplateVideo")) {
+        return %orig(data);
+    }
+
+    // 原生判断会同步此状态；复用页面时也必须清除，避免残留显示标记。
+    AWEContextStore *context = self.context;
+    if ([context isKindOfClass:%c(AWEContextStore)]) {
+        [context setBool:NO forKey:@"shouldShowMixVideo"];
+    }
+    return NO;
+}
+%end
+%end
+
+// 网络结果在原生异步 block 真正读取时再核对当前观看范围。
+%group DYYYUnpublishedResultGroup
+%hook AWEVideoSafetyCheckResult
+- (NSInteger)safetyCode {
+    NSInteger code = %orig;
+    return [DYYYVideoPlaybackGuard safetyCodeForResult:self originalCode:code];
+}
+%end
+%end
+
+%group DYYYUnpublishedHandlerGroup
+%hook AWEFeedVideoSafetyCheckHandler
+- (void)handleVideoSafetyPreCheckWithResults:(NSArray *)results referString:(NSString *)referString completion:(void (^)(NSArray *, NSError *, BOOL))completion {
+    if (!DYYYGetBool(@"DYYYKeepUnpublishedVideo")) {
+        %orig;
+        return;
+    }
+    if ([NSThread isMainThread]) {
+        [DYYYVideoPlaybackGuard prepareResults:results forHandler:self];
+        %orig;
+    } else {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [DYYYVideoPlaybackGuard prepareResults:results forHandler:self];
+            %orig(results, referString, completion);
+        });
+    }
+}
+- (BOOL)isIllegalAweme:(AWEAwemeModel *)model resultItemIDs:(NSArray *)itemIDs referString:(NSString *)referString {
+    if ([DYYYVideoPlaybackGuard shouldKeepModel:model forHandler:self]) {
+        return NO;
+    }
+    return %orig;
+}
+- (void)updateCacheIfNeededWithArray:(NSArray *)requests result:(NSArray *)results {
+    %orig([DYYYVideoPlaybackGuard filterCacheRequests:requests forHandler:self], results);
+}
+- (void)updateCacheIfNeededWithArray:(NSArray *)requests resultIDs:(NSArray *)itemIDs {
+    %orig([DYYYVideoPlaybackGuard filterCacheRequests:requests forHandler:self], itemIDs);
+}
+%end
+%end
+
+%group DYYYUnpublishedControllerGroup
+%hook AWEAwemeFeedSafetyCheckVideoController
+- (AWEFeedVideoSafetyCheckHandler *)safetyCheckHandler {
+    AWEFeedVideoSafetyCheckHandler *handler = %orig;
+    [DYYYVideoPlaybackGuard bindHandler:handler toController:self];
+    return handler;
+}
+- (void)handleVideoPrivacyCheckNotification:(NSNotification *)notification {
+    if (!DYYYGetBool(@"DYYYKeepUnpublishedVideo")) {
+        %orig;
+        return;
+    }
+    if ([NSThread isMainThread]) {
+        if (![DYYYVideoPlaybackGuard shouldKeepPrivacyNotification:notification forController:self]) {
+            %orig;
+        }
+    } else {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (![DYYYVideoPlaybackGuard shouldKeepPrivacyNotification:notification forController:self]) {
+                %orig(notification);
+            }
+        });
+    }
+}
+%end
+%end
+
+// 仅监听作品索引和页面显示状态；不增加滚动逐帧处理。
+%group DYYYUnpublishedFeedVisitGroup
+%hook AWEFeedTableViewController
+- (void)setCurrentPlayIndex:(NSInteger)index {
+    [DYYYVideoPlaybackGuard container:self willChangeIndex:index];
+    %orig;
+}
+- (void)setIsViewAppearing:(BOOL)appearing {
+    if (!appearing) {
+        [DYYYVideoPlaybackGuard containerWillDisappear:self];
+    }
+    %orig;
+}
+%end
+%end
+
+%group DYYYUnpublishedDetailVisitGroup
+%hook AWEAwemeDetailTableViewController
+- (void)setCurrentIndex:(NSInteger)index {
+    [DYYYVideoPlaybackGuard container:self willChangeIndex:index];
+    %orig;
+}
+- (void)setIsViewAppearing:(BOOL)appearing {
+    if (!appearing) {
+        [DYYYVideoPlaybackGuard containerWillDisappear:self];
+    }
+    %orig;
+}
+%end
 %end
 
 %hook AWEAwemeStatusModel
@@ -11411,6 +11531,16 @@ static Class tabBarButtonClass = nil;
     }
 
     if (isPlayVC && enableFS) {
+        // 详情页没有首页底栏；在原生设置播放器容器尺寸时就对齐一屏，
+        // 让后续视频比例计算使用正确的 bounds，避免布局结束后再补高度。
+        if (self.superview && CGAffineTransformIsIdentity(self.transform) &&
+            [vc respondsToSelector:@selector(contentView)] &&
+            self == ((AWEAwemePlayVideoViewController *)vc).contentView &&
+            [DYYYUtils isAwemeDetailVideoController:vc]) {
+            frame = [DYYYUtils fullHeightFrame:frame inContainerBounds:self.superview.bounds];
+            %orig(frame);
+            return;
+        }
         if (frame.origin.x != 0 && frame.origin.y != 0) {
             %orig(frame);
             return;
@@ -11427,6 +11557,27 @@ static Class tabBarButtonClass = nil;
         return;
     }
     %orig(frame);
+}
+
+%new
+- (void)dyyy_refreshLivePreStreamLayout {
+    if (![NSThread isMainThread]) {
+        __weak UIView *weakView = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakView dyyy_refreshLivePreStreamLayout];
+        });
+        return;
+    }
+
+    CGFloat upwardOffset = 0;
+    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
+        UIWindow *window = self.window ?: [DYYYUtils getActiveWindow];
+        CGFloat originalHeight = originalTabBarHeight > 0 ? originalTabBarHeight : 49.0 + window.safeAreaInsets.bottom;
+        CGFloat tabBarHeight = gCurrentTabBarHeight > 0 ? gCurrentTabBarHeight : originalHeight;
+        upwardOffset = (window && window.safeAreaInsets.bottom == 0)
+            ? MAX(0.0, tabBarHeight - originalHeight) : tabBarHeight;
+    }
+    [DYYYUtils applyLivePreStreamLayoutToStackView:self upwardOffset:upwardOffset];
 }
 
 %new
@@ -11542,7 +11693,7 @@ static Class tabBarButtonClass = nil;
 
     CGRect frame = self.view.frame;
     CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
-    CGFloat superviewHeight = self.view.superview.frame.size.height;
+    CGFloat superviewHeight = self.view.superview.bounds.size.height;
 
     if (frame.size.width != screenWidth && frame.size.height < superviewHeight) {
         return;
@@ -11550,6 +11701,7 @@ static Class tabBarButtonClass = nil;
 
     NSString *currentReferString = self.referString;
 
+    BOOL isDetailVideo = [DYYYUtils isAwemeDetailVideoController:self];
     BOOL useFullHeight = [currentReferString isEqualToString:@"general_search"] || [currentReferString isEqualToString:@"search_result"] || [currentReferString isEqualToString:@"search_ecommerce"] ||
                          [currentReferString isEqualToString:@"close_friends_moment"] || [currentReferString isEqualToString:@"offline_mode"] || [currentReferString isEqualToString:@"challenge"] ||
                          [currentReferString isEqualToString:@"general_search_scan"] || currentReferString == nil;
@@ -11579,7 +11731,19 @@ static Class tabBarButtonClass = nil;
         }
     }
 
-    if (useFullHeight) {
+    if (isDetailVideo) {
+        // 视频容器仍铺满整屏，信息层单独保留一份底部操作区高度，避免文案贴底。
+        // 原生详情列表已取消底部预留，这里只扣一次；referString 尚未赋值时也适用。
+        CGFloat bottomHeight = gCurrentTabBarHeight;
+        if (!isfinite(bottomHeight) || bottomHeight <= 0) {
+            bottomHeight = originalTabBarHeight;
+        }
+        if (!isfinite(bottomHeight) || bottomHeight <= 0) {
+            UIWindow *window = self.view.window ?: keyWindow;
+            bottomHeight = 49.0 + window.safeAreaInsets.bottom;
+        }
+        frame.size.height = MAX(1.0, superviewHeight - bottomHeight);
+    } else if (useFullHeight) {
         frame.size.height = superviewHeight;
     } else {
         frame.size.height = superviewHeight - gCurrentTabBarHeight;
@@ -11709,13 +11873,16 @@ static Class tabBarButtonClass = nil;
         UIView *contentView = self.contentView;
         if (contentView && contentView.superview) {
             CGRect frame = contentView.frame;
-            CGFloat parentHeight = contentView.superview.frame.size.height;
+            CGFloat parentHeight = contentView.superview.bounds.size.height;
 
-            if (frame.size.height == parentHeight - gCurrentTabBarHeight) {
+            if ([DYYYUtils isAwemeDetailVideoController:self] && CGAffineTransformIsIdentity(contentView.transform)) {
+                frame = [DYYYUtils fullHeightFrame:frame inContainerBounds:contentView.superview.bounds];
+            } else if (frame.size.height == parentHeight - gCurrentTabBarHeight) {
                 frame.size.height = parentHeight;
-                contentView.frame = frame;
             } else if (frame.size.height == parentHeight - (gCurrentTabBarHeight * 2)) {
                 frame.size.height = parentHeight - gCurrentTabBarHeight;
+            }
+            if (fabs(frame.size.height - contentView.frame.size.height) > 0.5) {
                 contentView.frame = frame;
             }
         }
@@ -11758,13 +11925,16 @@ static Class tabBarButtonClass = nil;
         UIView *contentView = self.contentView;
         if (contentView && contentView.superview) {
             CGRect frame = contentView.frame;
-            CGFloat parentHeight = contentView.superview.frame.size.height;
+            CGFloat parentHeight = contentView.superview.bounds.size.height;
 
-            if (frame.size.height == parentHeight - gCurrentTabBarHeight) {
+            if ([DYYYUtils isAwemeDetailVideoController:self] && CGAffineTransformIsIdentity(contentView.transform)) {
+                frame = [DYYYUtils fullHeightFrame:frame inContainerBounds:contentView.superview.bounds];
+            } else if (frame.size.height == parentHeight - gCurrentTabBarHeight) {
                 frame.size.height = parentHeight;
-                contentView.frame = frame;
             } else if (frame.size.height == parentHeight - (gCurrentTabBarHeight * 2)) {
                 frame.size.height = parentHeight - gCurrentTabBarHeight;
+            }
+            if (fabs(frame.size.height - contentView.frame.size.height) > 0.5) {
                 contentView.frame = frame;
             }
         }
@@ -12002,7 +12172,38 @@ static void DYYYRemoveKeyboardObserver(void) {
 
 %end
 
+%hook AWELiveNewPreStreamViewController
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    [DYYYUtils refreshLivePreStreamLayoutForController:self];
+}
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    [DYYYUtils refreshLivePreStreamLayoutForController:self];
+}
+
+%end
+
+%group DYYYLivePreStreamPageAppearGroup
+%hook AWELiveNewPreStreamViewController
+
+- (void)pageDidAppear:(BOOL)animated {
+    %orig;
+    [DYYYUtils refreshLivePreStreamLayoutForController:self];
+}
+
+%end
+%end
+
 %hook AWEElementStackView
+
+- (void)setTransform:(CGAffineTransform)transform {
+    %orig(transform);
+    // 切换底部页面时原生会重置 transform，排队恢复当前设置。
+    [self dyyy_refreshLivePreStreamLayout];
+}
 
 - (void)setAlpha:(CGFloat)alpha {
     BOOL isApplyingGlobal = (dyyyGlobalTransparencyMutationDepth > 0);
@@ -12105,9 +12306,7 @@ static void DYYYRemoveKeyboardObserver(void) {
 
 - (void)didMoveToWindow {
     %orig;
-    if (!self.window) {
-        [DYYYUtils applyLivePreStreamLayoutToStackView:self upwardOffset:0];
-    }
+    [self dyyy_refreshLivePreStreamLayout];
     if (self.window) {
         [self dyyy_applyGlobalTransparency];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(dyyy_applyGlobalTransparency) name:kDYYYGlobalTransparencyDidChangeNotification object:nil];
@@ -12124,15 +12323,12 @@ static void DYYYRemoveKeyboardObserver(void) {
 - (void)layoutSubviews {
     %orig;
 
-    UIViewController *viewController = [DYYYUtils firstAvailableViewControllerFromView:self];
-
-    CGFloat upwardOffset = 0;
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
-        UIWindow *window = self.window ?: [DYYYUtils getActiveWindow];
-        upwardOffset = (window && window.safeAreaInsets.bottom == 0)
-            ? gCurrentTabBarHeight - originalTabBarHeight : gCurrentTabBarHeight;
+    [self dyyy_refreshLivePreStreamLayout];
+    if ([DYYYUtils findAncestorResponderOfClass:%c(AWELiveNewPreStreamViewController) fromView:self]) {
+        return;
     }
-    [DYYYUtils applyLivePreStreamLayoutToStackView:self upwardOffset:upwardOffset];
+
+    UIViewController *viewController = [DYYYUtils firstAvailableViewControllerFromView:self];
 
     if ([viewController isKindOfClass:%c(AWEPlayInteractionViewController)]) {
         NSString *label = self.accessibilityLabel ?: @"";
@@ -12217,7 +12413,8 @@ static void DYYYRemoveKeyboardObserver(void) {
 - (NSArray<__kindof UIView *> *)arrangedSubviews {
 
     UIViewController *viewController = [DYYYUtils firstAvailableViewControllerFromView:self];
-    if ([viewController isKindOfClass:%c(AWEPlayInteractionViewController)]) {
+    if ([viewController isKindOfClass:%c(AWEPlayInteractionViewController)] &&
+        ![DYYYUtils findAncestorResponderOfClass:%c(AWELiveNewPreStreamViewController) fromView:self]) {
 
         if ([self.accessibilityLabel isEqualToString:@"left"] || [DYYYUtils containsSubviewOfClass:NSClassFromString(@"AWEFeedAnchorContainerView") inContainer:self]) {
             NSString *scaleValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYNicknameScale"];
@@ -12249,6 +12446,11 @@ static void DYYYRemoveKeyboardObserver(void) {
 
 %hook IESLiveStackView
 
+- (void)setTransform:(CGAffineTransform)transform {
+    %orig(transform);
+    [self dyyy_refreshLivePreStreamLayout];
+}
+
 - (void)setAlpha:(CGFloat)alpha {
     BOOL isApplyingGlobal = (dyyyGlobalTransparencyMutationDepth > 0);
     if (!isApplyingGlobal) {
@@ -12278,9 +12480,7 @@ static void DYYYRemoveKeyboardObserver(void) {
 
 - (void)didMoveToWindow {
     %orig;
-    if (!self.window) {
-        [DYYYUtils applyLivePreStreamLayoutToStackView:self upwardOffset:0];
-    }
+    [self dyyy_refreshLivePreStreamLayout];
     if (self.window) {
         [self dyyy_applyGlobalTransparency];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(dyyy_applyGlobalTransparency) name:kDYYYGlobalTransparencyDidChangeNotification object:nil];
@@ -12297,13 +12497,7 @@ static void DYYYRemoveKeyboardObserver(void) {
 - (void)layoutSubviews {
     %orig;
 
-    CGFloat upwardOffset = 0;
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
-        UIWindow *window = self.window ?: [DYYYUtils getActiveWindow];
-        upwardOffset = (window && window.safeAreaInsets.bottom == 0)
-            ? gCurrentTabBarHeight - originalTabBarHeight : gCurrentTabBarHeight;
-    }
-    [DYYYUtils applyLivePreStreamLayoutToStackView:self upwardOffset:upwardOffset];
+    [self dyyy_refreshLivePreStreamLayout];
 }
 
 %end
@@ -12423,7 +12617,8 @@ static void DYYYRemoveKeyboardObserver(void) {
         if (viewWidth + 0.5f >= screenWidth) {
             UIViewController *vc = [DYYYUtils firstAvailableViewControllerFromView:view];
             Class playClass = %c(AWEPlayVideoViewController);
-            if (playClass && [vc isKindOfClass:playClass]) {
+            // 详情页已经按全高布局，不能再叠加首页底栏对应的向上偏移。
+            if (playClass && [vc isKindOfClass:playClass] && ![DYYYUtils isAwemeDetailVideoController:vc]) {
                 AWEPlayVideoViewController *playVC = (AWEPlayVideoViewController *)vc;
                 AWEAwemeModel *model = playVC.model;
                 if ([model respondsToSelector:@selector(isShowLandscapeEntryView)] && model.isShowLandscapeEntryView) {
@@ -12454,7 +12649,7 @@ static void DYYYRemoveKeyboardObserver(void) {
         if (viewWidth + 0.5f >= screenWidth) {
             UIViewController *vc = [DYYYUtils firstAvailableViewControllerFromView:view];
             Class playClass = %c(AWEPlayVideoViewController);
-            if (playClass && [vc isKindOfClass:playClass]) {
+            if (playClass && [vc isKindOfClass:playClass] && ![DYYYUtils isAwemeDetailVideoController:vc]) {
                 AWEPlayVideoViewController *playVC = (AWEPlayVideoViewController *)vc;
                 AWEAwemeModel *model = playVC.model;
                 if ([model respondsToSelector:@selector(isShowLandscapeEntryView)] && model.isShowLandscapeEntryView) {
@@ -12485,7 +12680,7 @@ static void DYYYRemoveKeyboardObserver(void) {
         if (viewWidth + 0.5f >= screenWidth) {
             UIViewController *vc = [DYYYUtils firstAvailableViewControllerFromView:view];
             Class playClass = %c(AWEPlayVideoViewController);
-            if (playClass && [vc isKindOfClass:playClass]) {
+            if (playClass && [vc isKindOfClass:playClass] && ![DYYYUtils isAwemeDetailVideoController:vc]) {
                 AWEPlayVideoViewController *playVC = (AWEPlayVideoViewController *)vc;
                 AWEAwemeModel *model = playVC.model;
                 if ([model respondsToSelector:@selector(isShowLandscapeEntryView)] && model.isShowLandscapeEntryView) {
@@ -12590,15 +12785,30 @@ static void DYYYRemoveKeyboardObserver(void) {
 
 %end
 
+%group DYYYDetailFullscreenGroup
+%hook AWEAwemeDetailTableViewController
+
+- (BOOL)p_enableFullScreenSlide {
+    // 40.7 的原生列表约束和底部 margin 都读取此标志，统一取消详情页底部预留。
+    if (DYYYGetBool(@"DYYYEnableFullScreen") && [DYYYUtils isAwemeDetailVideoController:self]) {
+        return YES;
+    }
+    return %orig;
+}
+
+%end
+%end
+
 %hook AWEAwemeDetailTableView
 
 - (void)setFrame:(CGRect)frame {
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
-        CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
-
-        CGFloat remainder = fmod(frame.size.height, screenHeight);
-        if (remainder != 0) {
-            frame.size.height += (screenHeight - remainder);
+    if (DYYYGetBool(@"DYYYEnableFullScreen") && [NSThread isMainThread] &&
+        CGAffineTransformIsIdentity(self.transform)) {
+        UIView *container = self.superview;
+        // 列表视口只能占父容器的一屏，不能按屏幕高度向上取整成两屏。
+        // 原生行高和滑动落点都会读取这里的高度，略超一屏也必须保持一致。
+        if (container) {
+            frame = [DYYYUtils fullHeightFrame:frame inContainerBounds:container.bounds];
         }
     }
     %orig(frame);
@@ -13008,10 +13218,69 @@ static void findTargetViewInView(UIView *view) {
 
 %ctor {
     [[NSUserDefaults standardUserDefaults] registerDefaults:@{
-        @"DYYYDisableFeedNowPlayingInfo" : @YES
+        @"DYYYDisableFeedNowPlayingInfo" : @YES,
+        @"DYYYKeepUnpublishedVideo" : @NO
     }];
 
     DYYYMigrateCombinedHDRModeIfNeeded();
+
+    // 合集底栏接口签名一致时才接入；旧版本继续使用模型层回退。
+    Class mixBarElementClass = objc_getClass("AWEPlayInteractionNewMixVideoInfoElement");
+    Class contextStoreClass = objc_getClass("AWEContextStore");
+    Method mixBarAppearMethod = class_getInstanceMethod(mixBarElementClass, @selector(shouldAppearWithData:));
+    Method mixBarContextMethod = class_getInstanceMethod(mixBarElementClass, @selector(context));
+    Method contextSetBoolMethod = class_getInstanceMethod(contextStoreClass, @selector(setBool:forKey:));
+    if (mixBarAppearMethod && method_getNumberOfArguments(mixBarAppearMethod) == 3 &&
+        mixBarContextMethod && method_getNumberOfArguments(mixBarContextMethod) == 2 &&
+        contextSetBoolMethod && method_getNumberOfArguments(contextSetBoolMethod) == 4) {
+        char appearReturnType[16] = {0}, appearArgumentType[16] = {0};
+        char contextReturnType[16] = {0}, setterReturnType[16] = {0};
+        char setterValueType[16] = {0}, setterKeyType[16] = {0};
+        method_getReturnType(mixBarAppearMethod, appearReturnType, sizeof(appearReturnType));
+        method_getArgumentType(mixBarAppearMethod, 2, appearArgumentType, sizeof(appearArgumentType));
+        method_getReturnType(mixBarContextMethod, contextReturnType, sizeof(contextReturnType));
+        method_getReturnType(contextSetBoolMethod, setterReturnType, sizeof(setterReturnType));
+        method_getArgumentType(contextSetBoolMethod, 2, setterValueType, sizeof(setterValueType));
+        method_getArgumentType(contextSetBoolMethod, 3, setterKeyType, sizeof(setterKeyType));
+        if (appearReturnType[0] == @encode(BOOL)[0] && appearArgumentType[0] == @encode(id)[0] &&
+            contextReturnType[0] == @encode(id)[0] && setterReturnType[0] == @encode(void)[0] &&
+            setterValueType[0] == @encode(BOOL)[0] && setterKeyType[0] == @encode(id)[0]) {
+            %init(DYYYVideoMixBarVisibilityGroup);
+            dyyyVideoMixBarVisibilityHookEnabled = YES;
+        }
+    }
+
+    // 直播预览内部页面回调与 UIKit 回调分开，确认 BOOL 参数签名后再接入。
+    Class livePreviewClass = objc_getClass("AWELiveNewPreStreamViewController");
+    Method livePageAppearMethod = class_getInstanceMethod(livePreviewClass, @selector(pageDidAppear:));
+    char livePageReturnType[16] = {0}, livePageArgumentType[16] = {0};
+    if (livePageAppearMethod && method_getNumberOfArguments(livePageAppearMethod) == 3) {
+        method_getReturnType(livePageAppearMethod, livePageReturnType, sizeof(livePageReturnType));
+        method_getArgumentType(livePageAppearMethod, 2, livePageArgumentType, sizeof(livePageArgumentType));
+        if (livePageReturnType[0] == @encode(void)[0] && livePageArgumentType[0] == @encode(BOOL)[0]) {
+            %init(DYYYLivePreStreamPageAppearGroup);
+        }
+    }
+
+    // 私有方法必须确实存在且返回 BOOL，旧版本签名不同则保留原生行为。
+    Class detailTableClass = objc_getClass("AWEAwemeDetailTableViewController");
+    Method fullscreenSlideMethod = class_getInstanceMethod(detailTableClass, @selector(p_enableFullScreenSlide));
+    char fullscreenReturnType[16] = {0};
+    if (fullscreenSlideMethod && method_getNumberOfArguments(fullscreenSlideMethod) == 2) {
+        method_getReturnType(fullscreenSlideMethod, fullscreenReturnType, sizeof(fullscreenReturnType));
+        if (fullscreenReturnType[0] == @encode(BOOL)[0]) {
+            %init(DYYYDetailFullscreenGroup);
+        }
+    }
+
+    // 启动时核对私有接口签名；开关运行时读取，无需重启即可启用或关闭。
+    if ([DYYYVideoPlaybackGuard isCompatibleWithApp]) {
+        %init(DYYYUnpublishedResultGroup);
+        %init(DYYYUnpublishedHandlerGroup);
+        %init(DYYYUnpublishedControllerGroup);
+        %init(DYYYUnpublishedFeedVisitGroup);
+        %init(DYYYUnpublishedDetailVisitGroup);
+    }
 
     Class interactionBaseLabelClass = objc_getClass("AWECommentSwiftBizUI.CommentInteractionBaseLabel");
     if (interactionBaseLabelClass) {

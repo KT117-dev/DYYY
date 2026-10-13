@@ -6,6 +6,9 @@
 
 #define DYYY_VERSION @"2.2-9"
 
+// 保留当前未公开视频时的拦截提示
+#define DYYY_UNPUBLISHED_VIDEO_INTERCEPTED_MESSAGE @"已拦截未公开视频自动跳过"
+
 // 默认的远程 ABTest 配置地址
 #define DYYY_DEFAULT_ABTEST_URL @"https://github.com/Nathalie-Annis/AWEABTestDataPatch/releases/latest/download/ABTestDataPatch_A.json"
 

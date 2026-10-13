@@ -1030,6 +1030,14 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
               @"imageName" : @"ic_play_outlined_12"
           },
           @{
+              @"identifier" : @"DYYYKeepUnpublishedVideo",
+              @"title" : @"阻止未公开视频自动跳过",
+              @"subTitle" : @"保留当前作品的这次观看，手动滑走后结束保留",
+              @"detail" : @"",
+              @"cellType" : @37,
+              @"imageName" : @"ic_play_outlined_12"
+          },
+          @{
               @"identifier" : @"DYYYEnableBackgroundListen",
               @"title" : @"启用后台播放",
               @"subTitle" : @"使受到后台播放限制的视频可以在后台继续播放",

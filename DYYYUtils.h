@@ -52,6 +52,11 @@ NS_ASSUME_NONNULL_BEGIN
 + (UIViewController *)firstAvailableViewControllerFromView:(UIView *)view;
 + (UIViewController *)findViewControllerOfClass:(Class)targetClass inViewController:(UIViewController *)vc;
 
+/* 判断播放器/信息区是否属于喜欢、作品等视频详情列表。 */
++ (BOOL)isAwemeDetailVideoController:(UIViewController *)controller;
+/* 仅对齐顶边且占满宽度的视图，统一为父容器的一屏高度。 */
++ (CGRect)fullHeightFrame:(CGRect)frame inContainerBounds:(CGRect)containerBounds;
+
 + (UIResponder *)findAncestorResponderOfClass:(Class)targetClass fromView:(UIView *)view;
 
 /*
@@ -87,6 +92,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 /** 推荐流直播预览复用昵称文案/右侧缩放；嵌套容器只缩放一次，并可恢复原始变换。 */
 + (void)applyLivePreStreamLayoutToStackView:(UIView *)stackView upwardOffset:(CGFloat)upwardOffset;
+/** 直播预览重新显示或重新布局后，合并刷新当前页面内的信息容器。 */
++ (void)refreshLivePreStreamLayoutForController:(UIViewController *)controller;
 
 + (void)applyBlurEffectToView:(UIView *)view transparency:(float)userTransparency blurViewTag:(NSInteger)tag;
 + (void)clearBackgroundRecursivelyInView:(UIView *)view;

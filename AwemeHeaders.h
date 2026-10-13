@@ -31,6 +31,10 @@ typedef NS_ENUM(NSUInteger, DYEdgeMode) {
 - (void)dyyy_applyGlobalTransparency;
 @end
 
+@interface UIView (DYYYLivePreStreamLayout)
+- (void)dyyy_refreshLivePreStreamLayout;
+@end
+
 // 音量控制
 @interface AVSystemController : NSObject
 + (instancetype)sharedAVSystemController;
@@ -120,6 +124,16 @@ typedef NS_ENUM(NSUInteger, DYEdgeMode) {
 @interface AWELiveFollowFeedCellModel : NSObject
 @end
 
+@class AWEAwemeModel;
+
+// 安全检查容器的读取接口，推荐流和详情流共用。
+@protocol DYYYVideoSafetyFeedContainer <NSObject>
+@property(nonatomic, readonly) AWEAwemeModel *currentAweme;
+@property(nonatomic, readonly) NSInteger currentIndex;
+@property(nonatomic, readonly) BOOL isViewAppearing;
+@property(nonatomic, readonly) BOOL isActive;
+@end
+
 @interface AWEMusicCardModel : NSObject
 @end
 
@@ -194,6 +208,32 @@ typedef NS_ENUM(NSUInteger, DYEdgeMode) {
 @end
 @interface AWEAwemeStatusModel : NSObject
 - (void)setListenVideoStatus:(NSInteger)status;
+@end
+
+// 抖音 40.7.0 的作品预检查和隐私检查入口。
+@interface AWEVideoSafetyCheckResult : NSObject
+@property(nonatomic, assign) NSInteger safetyCode;
+@property(nonatomic, copy) NSString *safetyMsg;
+@property(nonatomic, copy) NSString *itemId;
+@end
+
+@protocol DYYYVideoSafetyCheckCache <NSObject>
+- (void)removeObjectForKey:(NSString *)key;
+@end
+
+@interface AWEFeedVideoSafetyCheckHandler : NSObject
+@property(nonatomic, readonly) id<DYYYVideoSafetyCheckCache> lruCache;
+- (BOOL)enableSafeCheckCache;
+- (void)handleVideoSafetyPreCheckWithResults:(NSArray *)results referString:(NSString *)referString completion:(void (^)(NSArray *, NSError *, BOOL))completion;
+- (BOOL)isIllegalAweme:(AWEAwemeModel *)model resultItemIDs:(NSArray *)itemIDs referString:(NSString *)referString;
+- (void)updateCacheIfNeededWithArray:(NSArray *)requests result:(NSArray *)results;
+- (void)updateCacheIfNeededWithArray:(NSArray *)requests resultIDs:(NSArray *)itemIDs;
+@end
+
+@interface AWEAwemeFeedSafetyCheckVideoController : NSObject
+@property(nonatomic, strong) AWEFeedVideoSafetyCheckHandler *safetyCheckHandler;
+@property(nonatomic, readonly) UIViewController<DYYYVideoSafetyFeedContainer> *container;
+- (void)handleVideoPrivacyCheckNotification:(NSNotification *)notification;
 @end
 
 @interface AWEABTestManager : NSObject
@@ -359,6 +399,7 @@ typedef NS_ENUM(NSUInteger, DYEdgeMode) {
 @property(nonatomic, strong) AWEAwemeModel *model;
 @property(nonatomic, strong) NSString *referString;
 @property(nonatomic, assign) BOOL isCommentVCShowing;
+@property(nonatomic, weak, readonly) UIViewController *awemeBaseViewController;
 - (id)controllerByProtocol:(Protocol *)protocol;
 - (id)videoDelegate;
 - (void)performCommentAction;
@@ -382,6 +423,7 @@ typedef NS_ENUM(NSUInteger, DYEdgeMode) {
 @end
 
 @interface AWEAwemePlayVideoViewController : UIViewController
+@property(nonatomic, strong, readonly) UIView *contentView;
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSKeyValueChangeKey, id> *)change context:(void *)context;
 - (void)setVideoControllerPlaybackRate:(double)arg0;
 
@@ -392,6 +434,16 @@ typedef NS_ENUM(NSUInteger, DYEdgeMode) {
 @end
 
 @interface AWEBaseElementView : UIView
+@end
+
+// 合集底栏的显示判断与页面状态存储（抖音 40.7.0）。
+@interface AWEContextStore : NSObject
+- (void)setBool:(BOOL)value forKey:(NSString *)key;
+@end
+
+@interface AWEPlayInteractionNewMixVideoInfoElement : NSObject
+@property(nonatomic, strong, readonly) AWEContextStore *context;
+- (BOOL)shouldAppearWithData:(AWEAwemeModel *)data;
 @end
 
 @interface AWESearchEntranceView : UIView
@@ -458,6 +510,8 @@ typedef NS_ENUM(NSUInteger, DYEdgeMode) {
 @end
 
 @interface AWEFeedTableViewController : UIViewController
+- (void)setCurrentPlayIndex:(NSInteger)index;
+- (void)setIsViewAppearing:(BOOL)appearing;
 @end
 
 @interface AWEFeedTableView : UIView
@@ -532,6 +586,7 @@ typedef NS_ENUM(NSUInteger, DYEdgeMode) {
 @end
 
 @interface AWELiveNewPreStreamViewController : UIViewController
+- (void)pageDidAppear:(BOOL)animated;
 @end
 
 @interface CommentInputContainerView : UIView
@@ -1269,7 +1324,13 @@ typedef NS_ENUM(NSUInteger, DYEdgeMode) {
 - (BOOL)prefersStatusBarHidden;
 @end
 @interface AWEAwemeDetailTableViewController : UIViewController
+@property(nonatomic, copy, readonly) NSString *referString;
 - (BOOL)prefersStatusBarHidden;
+- (BOOL)p_enableFullScreenSlide;
+- (void)setCurrentIndex:(NSInteger)index;
+- (void)setIsViewAppearing:(BOOL)appearing;
+@end
+@interface AWESearchVideoFeedTableViewController : AWEAwemeDetailTableViewController
 @end
 @interface AWEAwemeHotSpotTableViewController : UIViewController
 - (BOOL)prefersStatusBarHidden;
