@@ -16010,72 +16010,39 @@ static void DYYYFullscreenPageChromeVisualRestore(void) {
 
 %end
 
-#pragma mark - ProgressUnderline
+#pragma mark - 进度条原生垫层颜色
 
-%group DYYYFullscreenProgressUnderlineHooks
+static NSHashTable *gDYYYFullscreenProgressColorOwners;
 
-static const CGFloat kDYYYFullscreenUnderlineTolerance = 0.5;
+%group DYYYFullscreenProgressFeedColorHooks
+%hook AWEDProgressFeedContainer
 
-static char kDYYYFullscreenUnderlineColorKey;
-static char kDYYYFullscreenUnderlineOpaqueKey;
-
-static BOOL DYYYFullscreenIsUnderlineView(UIView *view, UIView *container) {
-    if (object_getClass(view) != [UIView class]) return NO;
-
-    UIColor *color = view.backgroundColor;
-    if (!color || CGColorGetAlpha(color.CGColor) < 0.99) return NO;
-
-    CGRect frame = view.frame;
-    CGFloat height = CGRectGetHeight(frame);
-    return height > 0.0
-        && height <= 2.0 + kDYYYFullscreenUnderlineTolerance
-        && fabs(CGRectGetMinX(frame)) <= kDYYYFullscreenUnderlineTolerance
-        && fabs(CGRectGetWidth(frame) - CGRectGetWidth(container.bounds)) <= kDYYYFullscreenUnderlineTolerance;
-}
-
-static void DYYYFullscreenClearUnderline(UIView *view) {
-    if (!objc_getAssociatedObject(view, &kDYYYFullscreenUnderlineColorKey)) {
-        objc_setAssociatedObject(view, &kDYYYFullscreenUnderlineColorKey, view.backgroundColor,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(view, &kDYYYFullscreenUnderlineOpaqueKey, @(view.opaque),
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-
-    if (![view.backgroundColor isEqual:UIColor.clearColor]) {
-        view.backgroundColor = UIColor.clearColor;
-    }
-    if (view.opaque) view.opaque = NO;
-}
-
-static void DYYYFullscreenRestoreUnderline(UIView *view) {
-    UIColor *color = objc_getAssociatedObject(view, &kDYYYFullscreenUnderlineColorKey);
-    if (!color) return;
-
-    view.backgroundColor = color;
-    view.opaque = [objc_getAssociatedObject(view, &kDYYYFullscreenUnderlineOpaqueKey) boolValue];
-    objc_setAssociatedObject(view, &kDYYYFullscreenUnderlineColorKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(view, &kDYYYFullscreenUnderlineOpaqueKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-
-%hook AWEDPlayerProgressContainerView
-
-- (void)layoutSubviews {
+- (void)setProgressUnderViewColor {
     %orig;
-
-    BOOL enabled = DYYYFullscreenVideoFullscreenOn();
-
-    for (UIView *view in self.subviews) {
-        // 已接管的视图只按开关决定去留：进度条收起时签名会漂移，据此还原会让黑边重现。
-        if (objc_getAssociatedObject(view, &kDYYYFullscreenUnderlineColorKey)) {
-            enabled ? DYYYFullscreenClearUnderline(view) : DYYYFullscreenRestoreUnderline(view);
-        } else if (enabled && DYYYFullscreenIsUnderlineView(view, self)) {
-            DYYYFullscreenClearUnderline(view);
-        }
-    }
+    if (!DYYYFullscreenVideoFullscreenOn()) return;
+    // 40.7.0 原生取色会再次写黑底，从取色入口只清理这块具名垫层。
+    UIView *underView = self.progressSliderUnderView;
+    if (!underView) return;
+    underView.backgroundColor = UIColor.clearColor;
+    [gDYYYFullscreenProgressColorOwners addObject:self];
 }
 
 %end
+%end
 
+%group DYYYFullscreenLegacyProgressColorHooks
+%hook AWEPlayInteractionProgressController
+
+- (void)setProgressUnderViewColor {
+    %orig;
+    if (!DYYYFullscreenVideoFullscreenOn()) return;
+    UIView *underView = self.progressSliderUnderView;
+    if (!underView) return;
+    underView.backgroundColor = UIColor.clearColor;
+    [gDYYYFullscreenProgressColorOwners addObject:self];
+}
+
+%end
 %end
 
 #pragma mark - CommentFullBackdrop
@@ -16246,7 +16213,17 @@ gDYYYFullscreenDKManagedVisualViews = [NSHashTable weakObjectsHashTable];
 
 %init(DYYYFullscreenVideoPageChromeHooks);
 
-%init(DYYYFullscreenProgressUnderlineHooks);
+    gDYYYFullscreenProgressColorOwners = [NSHashTable weakObjectsHashTable];
+    Class feedProgressClass = NSClassFromString(@"AWEDProgressFeedContainer");
+    if ([feedProgressClass instancesRespondToSelector:@selector(setProgressUnderViewColor)] &&
+        [feedProgressClass instancesRespondToSelector:@selector(progressSliderUnderView)]) {
+        %init(DYYYFullscreenProgressFeedColorHooks);
+    }
+    Class legacyProgressClass = NSClassFromString(@"AWEPlayInteractionProgressController");
+    if ([legacyProgressClass instancesRespondToSelector:@selector(setProgressUnderViewColor)] &&
+        [legacyProgressClass instancesRespondToSelector:@selector(progressSliderUnderView)]) {
+        %init(DYYYFullscreenLegacyProgressColorHooks);
+    }
 
 %init(DYYYFullscreenCommentFullBackdropHooks);
 
@@ -16263,6 +16240,11 @@ gDYYYFullscreenDKManagedVisualViews = [NSHashTable weakObjectsHashTable];
                 fullscreenWasEnabled = enabled;
                 if (!enabled) {
                     for (NSUInteger i = 0; i < gDYYYFullscreenRestoreCount; i++) gDYYYFullscreenRestoreHooks[i]();
+                    // 交回原生取色，恢复当前页面/主题应有的颜色。
+                    for (id owner in gDYYYFullscreenProgressColorOwners.allObjects) {
+                        [owner setProgressUnderViewColor];
+                    }
+                    [gDYYYFullscreenProgressColorOwners removeAllObjects];
                 }
             });
         }];

@@ -478,12 +478,19 @@ typedef NS_ENUM(NSUInteger, DYEdgeMode) {
 
 @interface AWEPlayInteractionProgressController : AWEPlayInteractionNewBaseController
 @property(retain, nonatomic) id progressSlider;
+@property (nonatomic, strong) UIView *progressSliderUnderView;
+- (void)setProgressUnderViewColor;
 - (NSString *)formatTimeFromSeconds:(CGFloat)seconds;
 - (NSString *)convertSecondsToTimeString:(NSInteger)totalSeconds;
 @end
 
 @interface AWEDProgressCoreContainer : NSObject
 @property(retain, nonatomic) id progressSlider;
+@end
+
+@interface AWEDProgressFeedContainer : NSObject
+@property (nonatomic, strong) UIView *progressSliderUnderView;
+- (void)setProgressUnderViewColor;
 @end
 
 @interface AWEAdAvatarView : UIView
