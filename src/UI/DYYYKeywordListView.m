@@ -1,294 +1,135 @@
 #import "DYYYKeywordListView.h"
-#import "DYYYCustomInputView.h"
-#import "DYYYUtils.h"
+#import "DYYYSettingsCoordinator.h"
+#import "DYYYSettingsHelper.h"
 
-@interface DYYYKeywordListView ()
-
-@property(nonatomic, strong) UIVisualEffectView *blurView;
-@property(nonatomic, strong) UIView *contentView;
-@property(nonatomic, strong) UILabel *titleLabel;
-@property(nonatomic, strong) UITableView *keywordsTableView;
-@property(nonatomic, strong) UIButton *addButton;
-@property(nonatomic, strong) UIButton *cancelButton;
-@property(nonatomic, strong) UIButton *confirmButton;
-@property(nonatomic, assign) CGRect originalFrame;
-@property(nonatomic, strong) NSMutableArray *keywords;
-
+@interface DYYYNativeKeywordController : UITableViewController
+@property(nonatomic, strong) NSMutableArray<NSString *> *keywords;
+@property(nonatomic, copy) void (^confirm)(NSArray *);
+@property(nonatomic, copy) void (^cancelled)(void);
+@property(nonatomic, copy) NSString *addTitle, *editTitle, *placeholder;
 @end
-
-@implementation DYYYKeywordListView
-
-- (void)setAddItemTitle:(NSString *)addItemTitle {
-    _addItemTitle = [addItemTitle copy];
-    NSString *addTitle = _addItemTitle ?: @"添加";
-    if (self.addButton) {
-        [self.addButton setTitle:[@"+ " stringByAppendingString:addTitle] forState:UIControlStateNormal];
+@implementation DYYYNativeKeywordController
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel target:self action:@selector(cancel)];
+    self.navigationItem.rightBarButtonItems = @[
+        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(save)],
+        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd target:self action:@selector(add)]
+    ];
+    self.tableView.rowHeight = UITableViewAutomaticDimension;
+    self.tableView.estimatedRowHeight = 50;
+    [self updateEmpty];
+}
+- (void)updateEmpty {
+    UILabel *empty = [UILabel new];
+    empty.text = @"暂无关键词，点 + 添加";
+    empty.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    empty.textColor = UIColor.secondaryLabelColor;
+    empty.textAlignment = NSTextAlignmentCenter;
+    self.tableView.backgroundView = self.keywords.count ? nil : empty;
+}
+- (void)cancel {
+    void (^cancel)(void) = self.cancelled;
+    [self dismissViewControllerAnimated:YES completion:cancel];
+}
+- (void)save {
+    NSArray *keywords = [self.keywords copy];
+    void (^confirm)(NSArray *) = self.confirm;
+    [self dismissViewControllerAnimated:YES
+                             completion:^{
+                               if (confirm)
+                                   confirm(keywords);
+                             }];
+}
+- (NSInteger)tableView:(UITableView *)table numberOfRowsInSection:(NSInteger)section {
+    return self.keywords.count;
+}
+- (UITableViewCell *)tableView:(UITableView *)table cellForRowAtIndexPath:(NSIndexPath *)path {
+    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+    cell.textLabel.text = self.keywords[path.row];
+    cell.textLabel.numberOfLines = 0;
+    cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    return cell;
+}
+- (void)edit:(NSInteger)index {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:index < 0 ? self.addTitle : self.editTitle message:nil preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+      field.text = index < 0 ? @"" : self.keywords[index];
+      field.placeholder = self.placeholder;
+      field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    __weak UIAlertController *weakAlert = alert;
+    [alert addAction:[UIAlertAction actionWithTitle:@"保存"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(__unused UIAlertAction *action) {
+                                              NSString *value = [weakAlert.textFields.firstObject.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+                                              if (!value.length)
+                                                  return;
+                                              if (index < 0) {
+                                                  [self.keywords addObject:value];
+                                                  [self.tableView insertRowsAtIndexPaths:@[ [NSIndexPath indexPathForRow:self.keywords.count - 1 inSection:0] ]
+                                                                        withRowAnimation:UITableViewRowAnimationAutomatic];
+                                              } else {
+                                                  self.keywords[index] = value;
+                                                  [self.tableView reloadRowsAtIndexPaths:@[ [NSIndexPath indexPathForRow:index inSection:0] ] withRowAnimation:UITableViewRowAnimationAutomatic];
+                                              }
+                                              [self updateEmpty];
+                                              [[[UISelectionFeedbackGenerator alloc] init] selectionChanged];
+                                            }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+- (void)add {
+    [self edit:-1];
+}
+- (void)tableView:(UITableView *)table didSelectRowAtIndexPath:(NSIndexPath *)path {
+    [table deselectRowAtIndexPath:path animated:YES];
+    [self edit:path.row];
+}
+- (void)tableView:(UITableView *)table commitEditingStyle:(UITableViewCellEditingStyle)style forRowAtIndexPath:(NSIndexPath *)path {
+    if (style == UITableViewCellEditingStyleDelete) {
+        [self.keywords removeObjectAtIndex:path.row];
+        [table deleteRowsAtIndexPaths:@[ path ] withRowAnimation:UITableViewRowAnimationAutomatic];
+        [self updateEmpty];
     }
 }
-
+@end
+@interface DYYYKeywordListView ()
+@property(nonatomic, copy) NSString *editorTitle;
+@property(nonatomic, copy) NSArray *initialKeywords;
+@property(nonatomic, weak) UIViewController *editor;
+@end
+@implementation DYYYKeywordListView
 - (instancetype)initWithTitle:(NSString *)title keywords:(NSArray *)keywords {
-    if (self = [super initWithFrame:UIScreen.mainScreen.bounds]) {
-        self.keywords = [NSMutableArray arrayWithArray:keywords ?: @[]];
-        self.addItemTitle = @"添加过滤项";
-        self.editItemTitle = @"编辑过滤项";
-        self.inputPlaceholder = @"请输入过滤项";
-        self.backgroundColor = [UIColor colorWithWhite:0 alpha:0.2];
-
-        BOOL isDarkMode = [DYYYUtils isDarkMode];
-
-        // 创建模糊效果背景
-        self.blurView = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:isDarkMode ? UIBlurEffectStyleDark : UIBlurEffectStyleLight]];
-        self.blurView.frame = self.bounds;
-        self.blurView.alpha = isDarkMode ? 0.3 : 0.2;
-        [self addSubview:self.blurView];
-
-        // 创建内容视图 - 根据模式设置背景色
-        self.contentView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 300, 350)];
-        CGFloat screenHeight = UIScreen.mainScreen.bounds.size.height;
-        self.contentView.center = CGPointMake(self.frame.size.width / 2, screenHeight / 3);
-        self.originalFrame = self.contentView.frame;
-        self.contentView.backgroundColor = isDarkMode ? [UIColor colorWithRed:30 / 255.0 green:30 / 255.0 blue:30 / 255.0 alpha:1.0] : [UIColor whiteColor];
-        self.contentView.layer.cornerRadius = 12;
-        self.contentView.layer.masksToBounds = YES;
-        self.contentView.alpha = 0;
-        self.contentView.transform = CGAffineTransformMakeScale(0.8, 0.8);
-        [self addSubview:self.contentView];
-
-        // 主标题 - 根据模式设置文本颜色
-        self.titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 20, 260, 24)];
-        self.titleLabel.text = title ?: @"过滤过滤项";
-        self.titleLabel.textColor =
-            isDarkMode ? [UIColor colorWithRed:230 / 255.0 green:230 / 255.0 blue:235 / 255.0 alpha:1.0] : [UIColor colorWithRed:45 / 255.0 green:47 / 255.0 blue:56 / 255.0 alpha:1.0];
-        self.titleLabel.textAlignment = NSTextAlignmentCenter;
-        self.titleLabel.font = [UIFont systemFontOfSize:18 weight:UIFontWeightMedium];
-        [self.contentView addSubview:self.titleLabel];
-
-        // 表格视图 - 根据模式设置背景色和分隔线颜色
-        self.keywordsTableView = [[UITableView alloc] initWithFrame:CGRectMake(20, 54, 260, 260)];
-        self.keywordsTableView.delegate = self;
-        self.keywordsTableView.dataSource = self;
-        self.keywordsTableView.backgroundColor =
-            isDarkMode ? [UIColor colorWithRed:45 / 255.0 green:45 / 255.0 blue:45 / 255.0 alpha:1.0] : [UIColor colorWithRed:245 / 255.0 green:245 / 255.0 blue:245 / 255.0 alpha:1.0];
-        self.keywordsTableView.layer.cornerRadius = 8;
-        self.keywordsTableView.tableFooterView = [UIView new];  // 隐藏空行分隔线
-        self.keywordsTableView.separatorStyle = UITableViewCellSeparatorStyleSingleLine;
-        self.keywordsTableView.separatorInset = UIEdgeInsetsMake(0, 15, 0, 15);
-        self.keywordsTableView.separatorColor =
-            isDarkMode ? [UIColor colorWithRed:60 / 255.0 green:60 / 255.0 blue:60 / 255.0 alpha:1.0] : [UIColor colorWithRed:230 / 255.0 green:230 / 255.0 blue:230 / 255.0 alpha:1.0];
-        [self.contentView addSubview:self.keywordsTableView];
-
-        // 添加按钮 - 根据模式设置背景色
-        self.addButton = [UIButton buttonWithType:UIButtonTypeSystem];
-        self.addButton.frame = CGRectMake(20, 324, 260, 40);
-        self.addButton.backgroundColor =
-            isDarkMode ? [UIColor colorWithRed:45 / 255.0 green:45 / 255.0 blue:45 / 255.0 alpha:1.0] : [UIColor colorWithRed:245 / 255.0 green:245 / 255.0 blue:245 / 255.0 alpha:1.0];
-        self.addButton.layer.cornerRadius = 8;
-        NSString *addTitle = self.addItemTitle ?: @"添加";
-        [self.addButton setTitle:[@"+ " stringByAppendingString:addTitle] forState:UIControlStateNormal];
-        [self.addButton setTitleColor:[UIColor colorWithRed:11 / 255.0 green:223 / 255.0 blue:154 / 255.0 alpha:1.0] forState:UIControlStateNormal];  // 强调色保持不变 #0BDF9A
-        [self.addButton addTarget:self action:@selector(addKeywordTapped) forControlEvents:UIControlEventTouchUpInside];
-        [self.contentView addSubview:self.addButton];
-
-        // 添加内容和按钮之间的分割线 - 根据模式设置颜色
-        UIView *contentButtonSeparator = [[UIView alloc] initWithFrame:CGRectMake(0, 374, 300, 0.5)];
-        contentButtonSeparator.backgroundColor =
-            isDarkMode ? [UIColor colorWithRed:60 / 255.0 green:60 / 255.0 blue:60 / 255.0 alpha:1.0] : [UIColor colorWithRed:230 / 255.0 green:230 / 255.0 blue:230 / 255.0 alpha:1.0];
-        [self.contentView addSubview:contentButtonSeparator];
-
-        // 按钮容器
-        UIView *buttonContainer = [[UIView alloc] initWithFrame:CGRectMake(0, contentButtonSeparator.frame.origin.y + 0.5, 300, 55.5)];
-        [self.contentView addSubview:buttonContainer];
-
-        // 取消按钮 - 根据模式设置文本颜色
-        self.cancelButton = [UIButton buttonWithType:UIButtonTypeSystem];
-        self.cancelButton.frame = CGRectMake(0, 0, 149.5, 55.5);
-        self.cancelButton.backgroundColor = [UIColor clearColor];
-        [self.cancelButton setTitle:@"取消" forState:UIControlStateNormal];
-        [self.cancelButton
-            setTitleColor:isDarkMode ? [UIColor colorWithRed:160 / 255.0 green:160 / 255.0 blue:165 / 255.0 alpha:1.0] : [UIColor colorWithRed:124 / 255.0 green:124 / 255.0 blue:130 / 255.0 alpha:1.0]
-                 forState:UIControlStateNormal];
-        [self.cancelButton addTarget:self action:@selector(cancelTapped) forControlEvents:UIControlEventTouchUpInside];
-        [buttonContainer addSubview:self.cancelButton];
-
-        // 按钮之间的分割线 - 根据模式设置颜色
-        UIView *buttonSeparator = [[UIView alloc] initWithFrame:CGRectMake(149.5, 0, 0.5, 55.5)];
-        buttonSeparator.backgroundColor =
-            isDarkMode ? [UIColor colorWithRed:60 / 255.0 green:60 / 255.0 blue:60 / 255.0 alpha:1.0] : [UIColor colorWithRed:230 / 255.0 green:230 / 255.0 blue:230 / 255.0 alpha:1.0];
-        [buttonContainer addSubview:buttonSeparator];
-
-        // 确认按钮 - 根据模式设置文本颜色
-        self.confirmButton = [UIButton buttonWithType:UIButtonTypeSystem];
-        self.confirmButton.frame = CGRectMake(150, 0, 150, 55.5);
-        self.confirmButton.backgroundColor = [UIColor clearColor];
-        [self.confirmButton setTitle:@"确定" forState:UIControlStateNormal];
-        [self.confirmButton
-            setTitleColor:isDarkMode ? [UIColor colorWithRed:230 / 255.0 green:230 / 255.0 blue:235 / 255.0 alpha:1.0] : [UIColor colorWithRed:45 / 255.0 green:47 / 255.0 blue:56 / 255.0 alpha:1.0]
-                 forState:UIControlStateNormal];
-        [self.confirmButton addTarget:self action:@selector(confirmTapped) forControlEvents:UIControlEventTouchUpInside];
-        [buttonContainer addSubview:self.confirmButton];
-
-        // 更新内容视图高度
-        CGRect frame = self.contentView.frame;
-        frame.size.height = buttonContainer.frame.origin.y + buttonContainer.frame.size.height - 85;
-        self.contentView.frame = frame;
-        self.contentView.center = CGPointMake(self.frame.size.width / 2, screenHeight / 2);
-        self.originalFrame = self.contentView.frame;
+    if ((self = [super initWithFrame:CGRectZero])) {
+        _editorTitle = title;
+        _initialKeywords = [keywords copy] ?: @[];
+        self.addItemTitle = @"添加关键词";
+        self.editItemTitle = @"编辑关键词";
+        self.inputPlaceholder = @"输入完整关键词";
     }
     return self;
 }
-
 - (void)show {
-    UIWindow *window = [DYYYUtils getActiveWindow];
-    if (!window) {
-        window = UIApplication.sharedApplication.windows.firstObject;
-    }
-    if (!window) {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [self show];
+        });
         return;
     }
-    [window addSubview:self];
-
-    [UIView animateWithDuration:0.12
-                     animations:^{
-                       self.contentView.alpha = 1.0;
-                       self.contentView.transform = CGAffineTransformIdentity;
-                     }];
+    DYYYNativeKeywordController *editor = [[DYYYNativeKeywordController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    editor.title = self.editorTitle;
+    editor.keywords = self.initialKeywords.mutableCopy;
+    editor.confirm = self.onConfirm;
+    editor.cancelled = self.onCancel;
+    editor.addTitle = self.addItemTitle;
+    editor.editTitle = self.editItemTitle;
+    editor.placeholder = self.inputPlaceholder;
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:editor];
+    self.editor = nav;
+    [DYYYSettingsCoordinator.presenter presentViewController:nav animated:YES completion:nil];
 }
-
 - (void)dismiss {
-    [UIView animateWithDuration:0.1
-        animations:^{
-          self.contentView.alpha = 0;
-          self.contentView.transform = CGAffineTransformMakeScale(0.8, 0.8);
-          self.blurView.alpha = 0;
-        }
-        completion:^(BOOL finished) {
-          [self removeFromSuperview];
-        }];
+    [self.editor dismissViewControllerAnimated:YES completion:nil];
 }
-
-- (void)addKeywordTapped {
-    DYYYCustomInputView *inputView = [[DYYYCustomInputView alloc] initWithTitle:self.addItemTitle defaultText:nil placeholder:self.inputPlaceholder];
-
-    __weak __typeof(self) weakSelf = self;
-    inputView.onConfirm = ^(NSString *text) {
-      if (text.length > 0) {
-          // 使用逗号分隔多个过滤项
-          NSArray *newKeywords = [text componentsSeparatedByString:@","];
-          for (NSString *keyword in newKeywords) {
-              NSString *trimmedKeyword = [keyword stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-              if (trimmedKeyword.length > 0) {
-                  [weakSelf.keywords addObject:trimmedKeyword];
-              }
-          }
-          [weakSelf.keywordsTableView reloadData];
-      }
-    };
-
-    [inputView show];
-}
-
-- (void)confirmTapped {
-    if (self.onConfirm) {
-        self.onConfirm([self.keywords copy]);
-    }
-    [self dismiss];
-}
-
-- (void)cancelTapped {
-    if (self.onCancel) {
-        self.onCancel();
-    }
-    [self dismiss];
-}
-
-#pragma mark - UITableViewDataSource
-
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return self.keywords.count;
-}
-
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    static NSString *cellIdentifier = @"KeywordCell";
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cellIdentifier];
-
-    BOOL isDarkMode = [DYYYUtils isDarkMode];
-
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:cellIdentifier];
-
-        // 删除按钮
-        UIButton *deleteButton = [UIButton buttonWithType:UIButtonTypeCustom];
-        deleteButton.frame = CGRectMake(0, 0, 30, 30);
-
-        // 自绘制叉号图标
-        UIGraphicsBeginImageContextWithOptions(CGSizeMake(12, 12), NO, 0);
-        CGContextRef context = UIGraphicsGetCurrentContext();
-
-        CGContextSetStrokeColorWithColor(context, [UIColor colorWithRed:180 / 255.0 green:180 / 255.0 blue:185 / 255.0 alpha:1.0].CGColor);
-        CGContextSetLineWidth(context, 1.5);
-
-        CGContextMoveToPoint(context, 1, 1);
-        CGContextAddLineToPoint(context, 11, 11);
-
-        CGContextMoveToPoint(context, 11, 1);
-        CGContextAddLineToPoint(context, 1, 11);
-
-        CGContextStrokePath(context);
-
-        UIImage *xImage = UIGraphicsGetImageFromCurrentImageContext();
-        UIGraphicsEndImageContext();
-
-        [deleteButton setImage:xImage forState:UIControlStateNormal];
-        deleteButton.adjustsImageWhenHighlighted = YES;
-
-        [deleteButton addTarget:self action:@selector(deleteKeyword:) forControlEvents:UIControlEventTouchUpInside];
-
-        cell.accessoryView = deleteButton;
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        cell.backgroundColor = [UIColor clearColor];
-        cell.textLabel.textColor =
-            isDarkMode ? [UIColor colorWithRed:230 / 255.0 green:230 / 255.0 blue:235 / 255.0 alpha:1.0] : [UIColor colorWithRed:45 / 255.0 green:47 / 255.0 blue:56 / 255.0 alpha:1.0];
-    }
-
-    // 配置单元格
-    cell.textLabel.text = self.keywords[indexPath.row];
-    cell.accessoryView.tag = indexPath.row;
-
-    // 设置背景色透明，以便表格背景色可见
-    cell.backgroundColor = [UIColor clearColor];
-
-    return cell;
-}
-
-- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    return 44.0;
-}
-
-#pragma mark - UITableViewDelegate
-
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
-
-    NSString *currentKeyword = self.keywords[indexPath.row];
-    DYYYCustomInputView *inputView = [[DYYYCustomInputView alloc] initWithTitle:self.editItemTitle defaultText:currentKeyword placeholder:self.inputPlaceholder];
-
-    __weak __typeof(self) weakSelf = self;
-    inputView.onConfirm = ^(NSString *text) {
-      if (text.length > 0) {
-          weakSelf.keywords[indexPath.row] = text;
-          [weakSelf.keywordsTableView reloadRowsAtIndexPaths:@[ indexPath ] withRowAnimation:UITableViewRowAnimationNone];
-      }
-    };
-
-    [inputView show];
-}
-
-- (void)deleteKeyword:(UIButton *)sender {
-    NSInteger index = sender.tag;
-    if (index < self.keywords.count) {
-        [self.keywords removeObjectAtIndex:index];
-        [self.keywordsTableView reloadData];
-    }
-}
-
 @end

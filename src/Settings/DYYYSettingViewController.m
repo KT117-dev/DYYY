@@ -1,800 +1,489 @@
 #import "DYYYSettingViewController.h"
-#import <Foundation/Foundation.h>
-#import <UIKit/UIKit.h>
+#import <objc/runtime.h>
 #import "DYYYConstants.h"
-#import "DYYYFloatClearButton.h"
-#import "DYYYFloatSpeedButton.h"
+#import "DYYYSettingsCoordinator.h"
+#import "DYYYSettingsHelper.h"
+#import "DYYYSettingsRegistry.h"
+#import "DYYYUtils.h"
 
-typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYYYSettingItemTypeTextField, DYYYSettingItemTypePicker };
-
-@interface DYYYSettingItem : NSObject
-
-@property(nonatomic, copy) NSString *title;
-@property(nonatomic, copy) NSString *key;
-@property(nonatomic, assign) DYYYSettingItemType type;
-@property(nonatomic, copy, nullable) NSString *placeholder;
-
-+ (instancetype)itemWithTitle:(NSString *)title key:(NSString *)key type:(DYYYSettingItemType)type;
-+ (instancetype)itemWithTitle:(NSString *)title key:(NSString *)key type:(DYYYSettingItemType)type placeholder:(nullable NSString *)placeholder;
-
+@interface DYYYNativeValueEditor : UIViewController
+@property(nonatomic, copy) NSString *initialText;
+@property(nonatomic, copy) void (^saved)(NSString *);
+@property(nonatomic, strong) UITextField *field;
+@property(nonatomic) BOOL scale;
+@property(nonatomic) BOOL integerThreshold;
+@end
+@implementation DYYYNativeValueEditor
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
+    self.field = [UITextField new];
+    self.field.text = self.initialText;
+    self.field.borderStyle = UITextBorderStyleRoundedRect;
+    self.field.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
+    self.field.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    self.field.adjustsFontForContentSizeCategory = YES;
+    self.field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    self.field.placeholder = self.integerThreshold ? @"非负整数，0 表示关闭" : @"精确数值；留空使用原默认值";
+    if (self.integerThreshold)
+        self.field.keyboardType = UIKeyboardTypeNumberPad;
+    UIStepper *stepper = [UIStepper new];
+    stepper.minimumValue = -1;
+    stepper.maximumValue = 1;
+    stepper.value = 0;
+    [stepper addTarget:self action:@selector(step:) forControlEvents:UIControlEventValueChanged];
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[ self.field, stepper ]];
+    row.spacing = 16;
+    row.alignment = UIStackViewAlignmentCenter;
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:row];
+    [NSLayoutConstraint activateConstraints:@[
+        [row.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:20],
+        [row.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-20],
+        [row.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:20], [self.field.heightAnchor constraintGreaterThanOrEqualToConstant:44]
+    ]];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemSave target:self action:@selector(save)];
+}
+- (void)step:(UIStepper *)stepper {
+    double value = self.field.text.doubleValue + stepper.value * (self.scale ? 0.1 : 1);
+    stepper.value = 0;
+    if (isfinite(value))
+        self.field.text = [NSString stringWithFormat:@"%.15g", value];
+    [[[UISelectionFeedbackGenerator alloc] init] selectionChanged];
+}
+- (void)save {
+    NSString *text = [self.field.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    double value;
+    NSScanner *scanner = [NSScanner scannerWithString:text];
+    if (self.integerThreshold && text.length) {
+        long long integer;
+        if (![scanner scanLongLong:&integer] || !scanner.isAtEnd || integer < 0) {
+            [DYYYUtils showToast:@"请输入非负整数，0 表示关闭"];
+            return;
+        }
+        if (self.saved)
+            self.saved([NSString stringWithFormat:@"%lld", integer]);
+        [self.navigationController popViewControllerAnimated:YES];
+        return;
+    }
+    if (text.length && (![scanner scanDouble:&value] || !scanner.isAtEnd || !isfinite(value))) {
+        [DYYYUtils showToast:@"请输入有限数值，可使用负数或小数"];
+        return;
+    }
+    if (self.saved)
+        self.saved(text);
+    [self.navigationController popViewControllerAnimated:YES];
+}
 @end
 
-@implementation DYYYSettingItem
-
-+ (instancetype)itemWithTitle:(NSString *)title key:(NSString *)key type:(DYYYSettingItemType)type {
-    return [self itemWithTitle:title key:key type:type placeholder:nil];
-}
-
-+ (instancetype)itemWithTitle:(NSString *)title key:(NSString *)key type:(DYYYSettingItemType)type placeholder:(nullable NSString *)placeholder {
-    DYYYSettingItem *item = [[DYYYSettingItem alloc] init];
-    item.title = title;
-    item.key = key;
-    item.type = type;
-    item.placeholder = placeholder;
-    return item;
-}
-
-@end
-
-@interface DYYYSettingViewController () <UITableViewDelegate, UITableViewDataSource>
-
-@property(nonatomic, strong) UITableView *tableView;
-@property(nonatomic, strong) NSArray<NSArray<DYYYSettingItem *> *> *settingSections;
-@property(nonatomic, strong) UILabel *footerLabel;
-@property(nonatomic, strong) NSMutableArray<NSString *> *sectionTitles;
-@property(nonatomic, strong) NSMutableSet *expandedSections;
-@property(nonatomic, strong) UIVisualEffectView *blurEffectView;
-@property(nonatomic, strong) UIVisualEffectView *vibrancyEffectView;
-@property(nonatomic, assign) BOOL isAgreementShown;
-
+@interface DYYYSettingViewController () <UISearchResultsUpdating, UIColorPickerViewControllerDelegate>
+@property(nonatomic, copy) NSArray<DYYYSettingsSection *> *sourceSections;
+@property(nonatomic, copy) NSArray<DYYYSettingsSection *> *visibleSections;
+@property(nonatomic, copy) NSString *tab;
+@property(nonatomic, strong) UISearchController *search;
+@property(nonatomic, strong) id changeToken;
+@property(nonatomic, strong) DYYYSettingDescriptor *colorItem;
+@property(nonatomic) BOOL refreshPending;
 @end
 
 @implementation DYYYSettingViewController
-
+- (instancetype)initWithTab:(NSString *)tab {
+    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
+        _tab = tab;
+        self.title = tab;
+    }
+    return self;
+}
+- (instancetype)initWithSections:(NSArray *)sections title:(NSString *)title {
+    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
+        _sourceSections = sections;
+        self.title = title;
+    }
+    return self;
+}
 - (void)viewDidLoad {
     [super viewDidLoad];
-
-    self.title = @"DYYY设置";
-    self.expandedSections = [NSMutableSet set];
-    self.isAgreementShown = NO;
-
-    [self setupAppearance];
-    [self setupBlurEffect];
-    [self setupTableView];
-    [self setupDefaultValues];
-    [self setupSettingItems];
-    [self setupSectionTitles];
-    [self setupFooterLabel];
-    [self addTitleGradientAnimation];
+    self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
+    self.tableView.rowHeight = UITableViewAutomaticDimension;
+    self.tableView.estimatedRowHeight = 66;
+    self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose target:DYYYSettingsCoordinator.class action:@selector(closeSettings)];
+    self.search = [[UISearchController alloc] initWithSearchResultsController:nil];
+    self.search.searchResultsUpdater = self;
+    self.search.obscuresBackgroundDuringPresentation = NO;
+    self.search.searchBar.placeholder = @"搜索名称、旧标题、分类或配置键";
+    self.navigationItem.searchController = self.search;
+    self.definesPresentationContext = YES;
+    [self prepareSections];
+    __weak typeof(self) weakSelf = self;
+    self.changeToken = [NSNotificationCenter.defaultCenter addObserverForName:DYYYSettingsDidChangeNotification
+                                                                       object:nil
+                                                                        queue:nil
+                                                                   usingBlock:^(__unused NSNotification *note) {
+                                                                     dispatch_async(dispatch_get_main_queue(), ^{
+                                                                       [weakSelf refreshVisibleRows];
+                                                                     });
+                                                                   }];
 }
-
-- (void)setupDefaultValues {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-
-    // 如果快捷倍速数值未设置，设置默认值
-    if (![defaults objectForKey:@"DYYYSpeedSettings"]) {
-        [defaults setObject:@"1.0,1.25,1.5,2.0" forKey:@"DYYYSpeedSettings"];
+- (void)dealloc {
+    if (self.changeToken)
+        [NSNotificationCenter.defaultCenter removeObserver:self.changeToken];
+}
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    if ([self.tab isEqual:@"总览"] && !self.search.isActive) {
+        [self prepareSections];
+        [self.tableView reloadData];  // 返回总览时同步最近修改；依赖变化不走此路径。
     }
-
-    // 如果按钮大小未设置，设置默认值
-    if (![defaults objectForKey:@"DYYYSpeedButtonSize"]) {
-        [defaults setFloat:32.0 forKey:@"DYYYSpeedButtonSize"];
+    [self refreshVisibleRows];
+}
+- (DYYYSettingsSection *)section:(NSString *)title items:(NSArray *)items {
+    DYYYSettingsSection *section = [DYYYSettingsSection new];
+    section.sectionHeaderTitle = title;
+    section.itemArray = items;
+    return section;
+}
+- (void)prepareSections {
+    DYYYSettingsRegistry *registry = DYYYSettingsRegistry.current;
+    if (self.sourceSections) {
+        self.visibleSections = self.sourceSections;
+        return;
     }
-
-}
-
-- (void)viewDidAppear:(BOOL)animated {
-    [super viewDidAppear:animated];
-
-    if (!self.isAgreementShown) {
-        [self checkFirstLaunch];
-        self.isAgreementShown = YES;
+    NSMutableArray *sections = [NSMutableArray array];
+    if ([self.tab isEqual:@"总览"]) {
+        DYYYSettingsSection *summary = [self section:@"DYYY · " DYYY_VERSION items:@[]];
+        summary.sectionFooterTitle = @"双指长按打开设置。所有选项直接读写现有配置，关闭后继续浏览。";
+        [sections addObject:summary];
+        NSMutableArray *common = [NSMutableArray array];
+        for (NSString *key in @[ @"DYYYEnableFullScreen", @"DYYYDefaultSpeed", @"DYYYEnableCommentBlur", @"DYYYEnableTabBarLiquidGlass" ]) {
+            DYYYSettingDescriptor *item = [registry itemForIdentifier:key];
+            if (item)
+                [common addObject:item];
+        }
+        [sections addObject:[self section:@"常用设置" items:common]];
+        NSMutableArray *recent = [NSMutableArray array];
+        for (NSString *key in [NSUserDefaults.standardUserDefaults arrayForKey:@"DYYYRecentSettings"]) {
+            DYYYSettingDescriptor *item = [registry itemForIdentifier:key];
+            if (item)
+                [recent addObject:item];
+        }
+        if (recent.count)
+            [sections addObject:[self section:@"最近修改" items:recent]];
+        NSMutableArray *enabled = [NSMutableArray array];
+        for (DYYYSettingDescriptor *item in registry.allItems) {
+            if ([item.tab isEqual:@"净化"] && [item.controlType isEqual:@"switch"] && item.isSwitchOn)
+                [enabled addObject:item];
+        }
+        if (enabled.count) {
+            DYYYSettingsSection *active = [self section:[NSString stringWithFormat:@"已启用的净化 · %lu 项", (unsigned long)enabled.count]
+                                                  items:[enabled subarrayWithRange:NSMakeRange(0, MIN(5, enabled.count))]];
+            active.sectionFooterTitle = @"这里显示前五项；完整列表可从净化分类或搜索进入。";
+            [sections addObject:active];
+        }
     }
-}
-
-- (void)setupAppearance {
-    self.navigationController.navigationBar.barTintColor = [UIColor clearColor];
-    self.navigationController.navigationBar.tintColor = [UIColor whiteColor];
-    self.navigationController.navigationBar.largeTitleTextAttributes = @{NSForegroundColorAttributeName : [UIColor whiteColor]};
-    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeAlways;
-    self.navigationController.navigationBar.prefersLargeTitles = YES;
-}
-
-- (void)setupBlurEffect {
-    UIBlurEffect *blurEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleDark];
-    self.blurEffectView = [[UIVisualEffectView alloc] initWithEffect:blurEffect];
-    self.blurEffectView.frame = self.view.bounds;
-    self.blurEffectView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [self.view addSubview:self.blurEffectView];
-
-    UIVibrancyEffect *vibrancyEffect = [UIVibrancyEffect effectForBlurEffect:blurEffect];
-    self.vibrancyEffectView = [[UIVisualEffectView alloc] initWithEffect:vibrancyEffect];
-    self.vibrancyEffectView.frame = self.blurEffectView.bounds;
-    self.vibrancyEffectView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [self.blurEffectView.contentView addSubview:self.vibrancyEffectView];
-
-    UIView *overlayView = [[UIView alloc] initWithFrame:self.view.bounds];
-    overlayView.backgroundColor = [UIColor colorWithWhite:0 alpha:0.3];
-    overlayView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [self.view addSubview:overlayView];
-}
-
-- (void)setupTableView {
-    self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleInsetGrouped];
-    self.tableView.delegate = self;
-    self.tableView.dataSource = self;
-    self.tableView.backgroundColor = [UIColor clearColor];
-    self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
-    self.tableView.contentInset = UIEdgeInsetsMake(20, 0, 0, 0);
-    self.tableView.sectionHeaderTopPadding = 0;
-    [self.view addSubview:self.tableView];
-}
-
-- (void)setupSettingItems {
-    self.settingSections = @[
-        @[
-            [DYYYSettingItem itemWithTitle:@"视频背景颜色" key:@"DYYYVideoBGColor" type:DYYYSettingItemTypeTextField placeholder:@"十六进制"],
-            [DYYYSettingItem itemWithTitle:@"启用弹幕改色" key:@"DYYYEnableDanmuColor" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"自定弹幕颜色" key:@"DYYYDanmuColor" type:DYYYSettingItemTypeTextField placeholder:@"十六进制"],
-            [DYYYSettingItem itemWithTitle:@"设置默认倍速" key:@"DYYYDefaultSpeed" type:DYYYSettingItemTypePicker],
-            [DYYYSettingItem itemWithTitle:@"设置长按倍速" key:@"DYYYLongPressSpeed" type:DYYYSettingItemTypePicker],
-            [DYYYSettingItem itemWithTitle:@"上下控制倍速" key:@"DYYYEnableLongPressSpeedGesture" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"显示进度时长" key:@"DYYYShowScheduleDisplay" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"进度时长样式" key:@"DYYYScheduleStyle" type:DYYYSettingItemTypeTextField placeholder:@"默认"],
-            [DYYYSettingItem itemWithTitle:@"进度纵轴位置" key:@"DYYYTimelineVerticalPosition" type:DYYYSettingItemTypeTextField placeholder:@"-12.5"],
-            [DYYYSettingItem itemWithTitle:@"进度标签颜色" key:@"DYYYProgressLabelColor" type:DYYYSettingItemTypeTextField placeholder:@"十六进制"],
-            [DYYYSettingItem itemWithTitle:@"隐藏视频进度" key:@"DYYYHideVideoProgress" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"启用自动播放" key:@"DYYYEnableAutoPlay" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"忽略投屏 VPN 检测" key:@"DYYYDisableCastVPNCheck" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"推荐过滤直播" key:@"DYYYSkipLive" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"推荐过滤热点" key:@"DYYYSkipHotSpot" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"推荐过滤低赞" key:@"DYYYFilterLowLikes" type:DYYYSettingItemTypeTextField placeholder:@"填0关闭"],
-            [DYYYSettingItem itemWithTitle:@"推荐视频时限" key:@"DYYYFilterTimeLimit" type:DYYYSettingItemTypeTextField placeholder:@"填0关闭，单位为天"],
-            [DYYYSettingItem itemWithTitle:@"全局HDR设置" key:@"DYYYHDRMode" type:DYYYSettingItemTypePicker],
-            [DYYYSettingItem itemWithTitle:@"启用首页净化" key:@"DYYYEnablePure" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"启用视频全屏" key:@"DYYYEnableFullScreen" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"启用屏蔽广告" key:@"DYYYNoAds" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"屏蔽检测更新" key:@"DYYYNoUpdates" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"去青少年弹窗" key:@"DYYYHideTeenMode" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"启用底栏液体玻璃" key:@"DYYYEnableTabBarLiquidGlass" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"评论区液体玻璃" key:@"DYYYEnableCommentBlur" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"通知栏液体玻璃" key:@"DYYYEnableNotificationTransparency" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"时间属地显示" key:@"DYYYEnableArea" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"国外解析账号" key:@"DYYYGeonamesUsername" type:DYYYSettingItemTypeTextField placeholder:@"需填写才能解析国外"],
-            [DYYYSettingItem itemWithTitle:@"时间标签颜色" key:@"DYYYLabelColor" type:DYYYSettingItemTypeTextField placeholder:@"十六进制"],
-            [DYYYSettingItem itemWithTitle:@"属地随机渐变" key:@"DYYYEnableRandomGradient" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏系统顶栏" key:@"DYYYHideStatusbar" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"关注二次确认" key:@"DYYYFollowTips" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"收藏二次确认" key:@"DYYYCollectTips" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"默认直播画质" key:@"DYYYLiveQuality" type:DYYYSettingItemTypePicker],
-            [DYYYSettingItem itemWithTitle:@"提高视频画质" key:@"DYYYEnableVideoHighestQuality" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"禁用直播PCDN功能" key:@"DYYYDisableLivePCDN" type:DYYYSettingItemTypeSwitch]
-        ],
-        @[
-            [DYYYSettingItem itemWithTitle:@"设置顶栏透明" key:@"DYYYTopBarTransparent" type:DYYYSettingItemTypeTextField placeholder:@"0-1小数"],
-            [DYYYSettingItem itemWithTitle:@"设置全局透明" key:@"DYYYGlobalTransparency" type:DYYYSettingItemTypeTextField placeholder:@"0-1小数"],
-            [DYYYSettingItem itemWithTitle:@"首页头像透明" key:@"DYYYAvatarViewTransparency" type:DYYYSettingItemTypeTextField placeholder:@"0-1小数"],
-            [DYYYSettingItem itemWithTitle:@"右侧栏缩放度" key:@"DYYYElementScale" type:DYYYSettingItemTypeTextField placeholder:@"不填默认"],
-            [DYYYSettingItem itemWithTitle:@"昵称文案缩放" key:@"DYYYNicknameScale" type:DYYYSettingItemTypeTextField placeholder:@"不填默认"],
-            [DYYYSettingItem itemWithTitle:@"昵称下移距离" key:@"DYYYNicknameVerticalOffset" type:DYYYSettingItemTypeTextField placeholder:@"不填默认"],
-            [DYYYSettingItem itemWithTitle:@"文案下移距离" key:@"DYYYDescriptionVerticalOffset" type:DYYYSettingItemTypeTextField placeholder:@"不填默认"],
-            [DYYYSettingItem itemWithTitle:@"属地上移距离" key:@"DYYYIPLabelVerticalOffset" type:DYYYSettingItemTypeTextField placeholder:@"不填默认"],
-            [DYYYSettingItem itemWithTitle:@"修改底栏高度" key:@"DYYYTabBarHeight" type:DYYYSettingItemTypeTextField placeholder:@"默认为空"],
-            [DYYYSettingItem itemWithTitle:@"设置首页标题" key:@"DYYYIndexTitle" type:DYYYSettingItemTypeTextField placeholder:@"不填默认"],
-            [DYYYSettingItem itemWithTitle:@"设置朋友标题" key:@"DYYYFriendsTitle" type:DYYYSettingItemTypeTextField placeholder:@"不填默认"],
-            [DYYYSettingItem itemWithTitle:@"设置消息标题" key:@"DYYYMsgTitle" type:DYYYSettingItemTypeTextField placeholder:@"不填默认"],
-            [DYYYSettingItem itemWithTitle:@"设置我的标题" key:@"DYYYSelfTitle" type:DYYYSettingItemTypeTextField placeholder:@"不填默认"]
-        ],
-        @[
-            [DYYYSettingItem itemWithTitle:@"隐藏全屏观看" key:@"DYYYHideEntry" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏底栏商城" key:@"DYYYHideShopButton" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏双列箭头" key:@"DYYYHideDoubleColumnEntry" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏底栏消息" key:@"DYYYHideMessageButton" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏底栏朋友" key:@"DYYYHideFriendsButton" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏底栏我的" key:@"DYYYHideMyButton" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏底栏加号" key:@"DYYYHidePlusButton" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏底栏热榜" key:@"DYYYHideHotSearch" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏底栏评论" key:@"DYYYHideComment" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏底栏红点" key:@"DYYYHideBottomDot" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏底栏背景" key:@"DYYYHideBottomBg" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"精简平板底栏" key:@"DYYYHidePadTabBarElements" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏常用小程序" key:@"DYYYHideSidebarRecentApps" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏常访问的人" key:@"DYYYHideSidebarRecentUsers" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏侧栏红点" key:@"DYYYHideSidebarDot" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏发作品框" key:@"DYYYHidePostView" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏头像加号" key:@"DYYYHideLOTAnimationView" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"移除头像加号" key:@"DYYYHideFollowPromptView" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏点赞数值" key:@"DYYYHideLikeLabel" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏评论数值" key:@"DYYYHideCommentLabel" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏收藏数值" key:@"DYYYHideCollectLabel" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏分享数值" key:@"DYYYHideShareLabel" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏点赞按钮" key:@"DYYYHideLikeButton" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏评论按钮" key:@"DYYYHideCommentButton" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏收藏按钮" key:@"DYYYHideCollectButton" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏头像及周边" key:@"DYYYHideAvatarButton" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏音乐按钮" key:@"DYYYHideMusicButton" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏分享按钮" key:@"DYYYHideShareButton" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏视频定位" key:@"DYYYHideLocation" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏右上搜索" key:@"DYYYHideDiscover" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏相关搜索" key:@"DYYYHideInteractionSearch" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏弹出热搜" key:@"DYYYHideSearchBubble" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏搜索同款" key:@"DYYYHideSearchSame" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏长框搜索" key:@"DYYYHideSearchEntrance" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏进入直播" key:@"DYYYHideEnterLive" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏评论视图" key:@"DYYYHideCommentViews" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏通知提示" key:@"DYYYHidePushBanner" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏消息顶栏红包" key:@"DYYYHideMessageTabRedPacket" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏头像列表" key:@"DYYYHideAvatarList" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏头像气泡" key:@"DYYYHideAvatarBubble" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏左侧边栏" key:@"DYYYHideLeftSideBar" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏吃喝玩乐" key:@"DYYYHideNearbyCapsuleView" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏弹幕按钮" key:@"DYYYHideDanmuButton" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏取消静音" key:@"DYYYHideCancelMute" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏去汽水听" key:@"DYYYHideQuqishuiting" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏共创头像" key:@"DYYYHideGongChuang" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏热点提示" key:@"DYYYHideHotspot" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏推荐提示" key:@"DYYYHideRecommendTips" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏分享提示" key:@"DYYYHideShareContentView" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏作者声明" key:@"DYYYHideAntiAddictedNotice" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏底部相关" key:@"DYYYHideBottomRelated" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏视频锚点" key:@"DYYYHideFeedAnchorContainer" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏挑战贴纸" key:@"DYYYHideChallengeStickers" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏图文标签" key:@"DYYYHideEditTags" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏校园提示" key:@"DYYYHideTemplateTags" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏作者店铺" key:@"DYYYHideHisShop" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏顶栏横线" key:@"DYYYHideTopBarLine" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏视频合集" key:@"DYYYHideTemplateVideo" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏短剧合集" key:@"DYYYHideTemplatePlaylet" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏动图标签" key:@"DYYYHideLiveGIF" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏笔记标签" key:@"DYYYHideItemTag" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏底部话题" key:@"DYYYHideTemplateGroup" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏相机定位" key:@"DYYYHideCameraLocation" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏视频滑条" key:@"DYYYHideStoryProgressSlide" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏图片滑条" key:@"DYYYHideDotsIndicator" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏分享私信" key:@"DYYYHidePrivateMessages" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏昵称右侧" key:@"DYYYHideRightLabel" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏群聊商店" key:@"DYYYHideGroupShop" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏直播胶囊" key:@"DYYYHideLiveCapsuleView" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏关注顶端" key:@"DYYYHideLiveView" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏关注直播" key:@"DYYYHideConcernCapsuleView" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏同城顶端" key:@"DYYYHideMenuView" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏群直播中" key:@"DYYYHideGroupLiveIndicator" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏聊天底栏" key:@"DYYYHideGroupInputActionBar" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏添加朋友" key:@"DYYYHideButton" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏日常按钮" key:@"DYYYHideFamiliar" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏直播广场" key:@"DYYYHideLivePlayground" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏礼物展馆" key:@"DYYYHideGiftPavilion" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏顶栏红点" key:@"DYYYHideTopBarBadge" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏退出清屏" key:@"DYYYHideLiveRoomClear" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏投屏按钮" key:@"DYYYHideLiveRoomMirroring" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏直播发现" key:@"DYYYHideLiveDiscovery" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏直播点歌" key:@"DYYYHideKTVSongIndicator" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏流量提醒" key:@"DYYYHideCellularAlert" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏红包悬浮" key:@"DYYYHidePendantGroup" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏章节进度" key:@"DYYYHideChapterProgress" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏键盘AI" key:@"DYYYHideKeyboardAI" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏上次看到" key:@"DYYYHidePopover" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏展开渐变" key:@"DYYYHideGradient" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏关闭按钮" key:@"DYYYHideLiveRoomClose" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏横屏按钮" key:@"DYYYHideLiveRoomFullscreen" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏返回按钮" key:@"DYYYHideBack" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏商品信息" key:@"DYYYHideLiveGoodsMsg" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏点赞动画" key:@"DYYYHideLiveLikeAnimation" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏输入扫码" key:@"DYYYHideScancode" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏私信回复" key:@"DYYYHideReply" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏暂停相关" key:@"DYYYHidePauseVideoRelatedWord" type:DYYYSettingItemTypeSwitch]
-        ],
-        @[
-            [DYYYSettingItem itemWithTitle:@"移除推荐" key:@"DYYYHideHotContainer" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"移除关注" key:@"DYYYHideFollow" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"移除精选" key:@"DYYYHideMediumVideo" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"移除商城" key:@"DYYYHideMall" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"移除朋友" key:@"DYYYHideFriend" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"移除同城" key:@"DYYYHideNearby" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"移除团购" key:@"DYYYHideGroupon" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"移除直播" key:@"DYYYHideTabLive" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"移除热点" key:@"DYYYHidePadHot" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"移除经验" key:@"DYYYHideHangout" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"移除短剧" key:@"DYYYHidePlaylet" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"移除看剧" key:@"DYYYHideCinema" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"移除少儿" key:@"DYYYHideKidsV2" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"移除游戏" key:@"DYYYHideGame" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"移除长视频" key:@"DYYYHideMediumVideo" type:DYYYSettingItemTypeSwitch]
-        ],
-        @[
-            [DYYYSettingItem itemWithTitle:@"精简长按面板" key:@"DYYYSimplifyLongPressPanel" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏面板项目" key:@"DYYYHidePanelItems" type:DYYYSettingItemTypeTextField placeholder:@"逗号分隔按钮名"],
-            [DYYYSettingItem itemWithTitle:@"隐藏评论分享" key:@"DYYYHideCommentShareToFriends" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏评论复制" key:@"DYYYHideCommentLongPressCopy" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏评论保存" key:@"DYYYHideCommentLongPressSaveImage" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏评论举报" key:@"DYYYHideCommentLongPressReport" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏评论搜索" key:@"DYYYHideCommentLongPressSearch" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏评论转发日常" key:@"DYYYHideCommentLongPressDaily" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏评论视频回复" key:@"DYYYHideCommentLongPressVideoReply" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏评论识别图片" key:@"DYYYHideCommentLongPressPictureSearch" type:DYYYSettingItemTypeSwitch]
-        ],
-        @[
-            [DYYYSettingItem itemWithTitle:@"启用新版长按面板" key:@"DYYYEnableModernPanel" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"长按面板玻璃效果" key:@"DYYYLongPressPanelBlur" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"长按面板深色模式" key:@"DYYYLongPressPanelDark" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"保存面板玻璃效果" key:@"DYYYEnableSheetBlur" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"面板毛玻璃透明度" key:@"DYYYSheetBlurTransparent" type:DYYYSettingItemTypeTextField placeholder:@"0-1小数"],
-            [DYYYSettingItem itemWithTitle:@"长按面板保存视频" key:@"DYYYLongPressSaveVideo" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"长按面板保存封面" key:@"DYYYLongPressSaveCover" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"长按面板保存音频" key:@"DYYYLongPressSaveAudio" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"长按面板保存图片" key:@"DYYYLongPressSaveCurrentImage" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"长按保存所有图片" key:@"DYYYLongPressSaveAllImages" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"长按面板生成视频" key:@"DYYYLongPressCreateVideo" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"长按面板复制文案" key:@"DYYYLongPressCopyText" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"长按面板复制链接" key:@"DYYYLongPressCopyLink" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"长按面板接口解析" key:@"DYYYLongPressApiDownload" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"长按面板定时关闭" key:@"DYYYLongPressTimerClose" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"长按面板过滤文案" key:@"DYYYLongPressFilterTitle" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"长按面板过滤作者" key:@"DYYYLongPressFilterUser" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"双击面板保存视频" key:@"DYYYDoubleTapDownload" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"双击面板保存音频" key:@"DYYYDoubleTapDownloadAudio" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"双击面板接口解析" key:@"DYYYDoubleInterfaceDownload" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"双击面板制作视频" key:@"DYYYDoubleCreateVideo" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"双击面板复制文案" key:@"DYYYDoubleTapCopyDesc" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"双击面板打开评论" key:@"DYYYDoubleTapComment" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"双击面板点赞视频" key:@"DYYYDoubleTapLike" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"双击面板分享视频" key:@"DYYYDoubleTapshowSharePanel" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"双击面板长按面板" key:@"DYYYDoubleTapshowDislikeOnVideo" type:DYYYSettingItemTypeSwitch]
-        ],
-        @[
-            [DYYYSettingItem itemWithTitle:@"启用双击打开评论" key:@"DYYYEnableDoubleOpenComment" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"启用双击打开菜单" key:@"DYYYEnableDoubleTapMenu" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"启用自动勾选原图" key:@"DYYYAutoSelectOriginalPhoto" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"资料默认进入作品" key:@"DYYYDefaultEnterWorks" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"禁用自动进入直播" key:@"DYYYDisableAutoEnterLive" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"左侧边栏快捷入口" key:@"DYYYEntrance" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"接口解析保存媒体" key:@"DYYYInterfaceDownload" type:DYYYSettingItemTypeTextField placeholder:@"不填关闭"],
-            [DYYYSettingItem itemWithTitle:@"接口显示清晰选项" key:@"DYYYShowAllVideoQuality" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"移除评论实况水印" key:@"DYYYCommentLivePhotoNotWaterMark" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"移除评论图片水印" key:@"DYYYCommentNotWaterMark" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"禁用点击首页刷新" key:@"DYYYDisableHomeRefresh" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"禁用双击视频点赞" key:@"DYYYDisableDoubleTapLike" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"启用保存他人头像" key:@"DYYYEnableSaveAvatar" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"保存评论区表情包" key:@"DYYYForceDownloadEmotion" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"保存预览页表情包" key:@"DYYYForceDownloadPreviewEmotion" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"保存聊天页表情包" key:@"DYYYForceDownloadIMEmotion" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"长按评论复制评论" key:@"DYYYCommentCopyText" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"长按简介复制简介" key:@"DYYYBioCopyText" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"长按文案复制文案" key:@"DYYYLongPressCopyTextEnabled" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"下载完成震动反馈" key:@"DYYYHapticFeedbackEnabled" type:DYYYSettingItemTypeSwitch]
-        ],
-        @[
-            [DYYYSettingItem itemWithTitle:@"启用快捷倍速按钮" key:@"DYYYEnableFloatSpeedButton" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"快捷倍速数值设置" key:@"DYYYSpeedSettings" type:DYYYSettingItemTypeTextField placeholder:@"逗号分隔"],
-            [DYYYSettingItem itemWithTitle:@"自动恢复默认倍速" key:@"DYYYAutoRestoreSpeed" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"倍速按钮显示后缀" key:@"DYYYSpeedButtonShowX" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"快捷倍速按钮大小" key:@"DYYYSpeedButtonSize" type:DYYYSettingItemTypeTextField placeholder:@"默认32"],
-            [DYYYSettingItem itemWithTitle:@"启用一键清屏按钮" key:@"DYYYEnableFloatClearButton" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"快捷清屏按钮大小" key:@"DYYYEnableFloatClearButtonSize" type:DYYYSettingItemTypeTextField placeholder:@"默认40"],
-            [DYYYSettingItem itemWithTitle:@"清屏隐藏弹幕" key:@"DYYYHideDanmaku" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"清屏移除时间进度" key:@"DYYYRemoveTimeProgress" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"清屏隐藏时间进度" key:@"DYYYHideTimeProgress" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"清屏隐藏滑条" key:@"DYYYHideSlider" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"清屏隐藏底栏" key:@"DYYYHideTabBar" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"清屏隐藏倍速按钮" key:@"DYYYHideSpeed" type:DYYYSettingItemTypeSwitch]
-        ]
-    ];
-}
-
-- (void)setupSectionTitles {
-    self.sectionTitles = [@[ @"基本设置", @"界面设置", @"隐藏设置", @"顶栏移除", @"隐藏面板", @"面板设置", @"功能设置", @"悬浮按钮" ] mutableCopy];
-}
-
-- (void)setupFooterLabel {
-    self.footerLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 50)];
-    self.footerLabel.text = [NSString stringWithFormat:@"Developer By @huamidev\nVersion: %@ (%@)", DYYY_VERSION, @"260104"];
-    self.footerLabel.textAlignment = NSTextAlignmentCenter;
-    self.footerLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightRegular];
-    self.footerLabel.textColor = [UIColor colorWithRed:173 / 255.0 green:216 / 255.0 blue:230 / 255.0 alpha:1.0];
-    self.footerLabel.numberOfLines = 2;
-    self.footerLabel.lineBreakMode = NSLineBreakByWordWrapping;
-    self.tableView.tableFooterView = self.footerLabel;
-}
-
-- (void)addTitleGradientAnimation {
-    CAGradientLayer *gradient = [CAGradientLayer layer];
-    gradient.colors = @[ (__bridge id)[UIColor systemRedColor].CGColor, (__bridge id)[UIColor systemBlueColor].CGColor ];
-    gradient.startPoint = CGPointMake(0, 0);
-    gradient.endPoint = CGPointMake(1, 0);
-    gradient.frame = CGRectMake(0, 0, 150, 30);
-
-    UIView *titleView = [[UIView alloc] initWithFrame:gradient.frame];
-    [titleView.layer addSublayer:gradient];
-
-    UILabel *titleLabel = [[UILabel alloc] initWithFrame:titleView.bounds];
-    titleLabel.text = self.title;
-    titleLabel.textAlignment = NSTextAlignmentCenter;
-    titleLabel.font = [UIFont boldSystemFontOfSize:20];
-    titleLabel.textColor = [UIColor clearColor];
-
-    gradient.mask = titleLabel.layer;
-    self.navigationItem.titleView = titleView;
-
-    CABasicAnimation *colorChange = [CABasicAnimation animationWithKeyPath:@"colors"];
-    colorChange.toValue = @[ (__bridge id)[UIColor systemYellowColor].CGColor, (__bridge id)[UIColor systemGreenColor].CGColor ];
-    colorChange.duration = 2.0;
-    colorChange.autoreverses = YES;
-    colorChange.repeatCount = HUGE_VALF;
-
-    [gradient addAnimation:colorChange forKey:@"colorChangeAnimation"];
-}
-
-#pragma mark - Helper Methods
-
-- (NSArray *)optionsForKey:(NSString *)key {
-    if ([key isEqualToString:@"DYYYDefaultSpeed"] || [key isEqualToString:@"DYYYLongPressSpeed"]) {
-        // 倍速选项
-        return @[ @0.75, @1.0, @1.25, @1.5, @2.0, @2.5, @3.0 ];
-    } else if ([key isEqualToString:@"DYYYLiveQuality"]) {
-        // 直播清晰度选项
-        return @[ @"蓝光帧彩", @"蓝光", @"超清", @"高清", @"标清", @"自动" ];
-    } else if ([key isEqualToString:@"DYYYHDRMode"]) {
-        return @[ @"关闭", @"全局屏蔽HDR效果", @"全局过滤HDR作品" ];
+    NSArray *tabs = [self.tab isEqual:@"总览"] ? @[ @"播放", @"外观", @"净化", @"工具" ] : @[ self.tab ];
+    for (NSString *tab in tabs) {
+        NSMutableArray *links = [NSMutableArray array];
+        for (DYYYSettingsSection *section in [registry sectionsForTab:tab]) {
+            DYYYSettingDescriptor *link = [DYYYSettingDescriptor new];
+            link.identifier = [@"navigation:" stringByAppendingString:section.sectionHeaderTitle];
+            link.title = section.sectionHeaderTitle;
+            link.detail = [NSString stringWithFormat:@"%lu 项", (unsigned long)section.itemArray.count];
+            link.controlType = @"navigation";
+            link.children = @[ section ];
+            [links addObject:link];
+        }
+        if (links.count)
+            [sections addObject:[self section:tab items:links]];
     }
-    return @[];
+    self.visibleSections = sections;
 }
-
-- (NSString *)displayValueForKey:(NSString *)key value:(id)value {
-    if ([key isEqualToString:@"DYYYDefaultSpeed"] || [key isEqualToString:@"DYYYLongPressSpeed"]) {
-        // 倍速显示格式
-        float speedValue = [value floatValue];
-        return [NSString stringWithFormat:@"%.2f", speedValue];
-    } else if ([key isEqualToString:@"DYYYLiveQuality"]) {
-        // 直播清晰度直接显示
-        return value ?: @"自动";
-    } else if ([key isEqualToString:@"DYYYHDRMode"]) {
-        return value ?: @"关闭";
+- (void)refreshVisibleRows {
+    if (!self.isViewLoaded || self.refreshPending)
+        return;
+    self.refreshPending = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      typeof(self) self = weakSelf;
+      if (!self)
+          return;
+      self.refreshPending = NO;
+      [DYYYSettingsRegistry.current refreshDependencies];
+      if (self.tableView.isTracking || self.tableView.isDragging)
+          return;
+      NSArray *paths = self.tableView.indexPathsForVisibleRows;
+      if (paths.count)
+          [self.tableView reloadRowsAtIndexPaths:paths withRowAnimation:UIAccessibilityIsReduceMotionEnabled() ? UITableViewRowAnimationNone : UITableViewRowAnimationFade];
+    });
+}
+- (void)updateSearchResultsForSearchController:(UISearchController *)controller {
+    NSString *query = [controller.searchBar.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!query.length)
+        [self prepareSections];
+    else {
+        NSMutableArray *found = [NSMutableArray array];
+        for (DYYYSettingDescriptor *item in DYYYSettingsRegistry.current.allItems) {
+            NSString *text = [NSString stringWithFormat:@"%@ %@ %@ %@ %@", item.title, item.subTitle ?: @"", item.identifier, item.category, [item.aliases componentsJoinedByString:@" "]];
+            if ([text rangeOfString:query options:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch].location != NSNotFound)
+                [found addObject:item];
+        }
+        self.visibleSections = @[ [self section:found.count ? @"搜索结果" : @"没有匹配的设置" items:found] ];
     }
-    return [NSString stringWithFormat:@"%@", value];
+    [self.tableView reloadData];  // 搜索改变数据集；开关和依赖更新仅刷新可见行。
 }
-
-- (id)defaultValueForKey:(NSString *)key {
-    if ([key isEqualToString:@"DYYYDefaultSpeed"] || [key isEqualToString:@"DYYYLongPressSpeed"]) {
-        return @1.0;
-    } else if ([key isEqualToString:@"DYYYLiveQuality"]) {
-        return @"自动";
-    } else if ([key isEqualToString:@"DYYYHDRMode"]) {
-        return @"关闭";
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
+    return self.visibleSections.count;
+}
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return self.visibleSections[section].itemArray.count;
+}
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    return self.visibleSections[section].sectionHeaderTitle;
+}
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    return self.visibleSections[section].sectionFooterTitle;
+}
+- (DYYYSettingDescriptor *)itemAt:(NSIndexPath *)path {
+    return self.visibleSections[path.section].itemArray[path.row];
+}
+- (NSString *)valueForItem:(DYYYSettingDescriptor *)item {
+    if ([item.controlType isEqual:@"navigation"])
+        return item.detail;
+    if (item.assetFilename.length) {
+        NSString *folder = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:@"DYYY"];
+        return [NSFileManager.defaultManager fileExistsAtPath:[folder stringByAppendingPathComponent:item.assetFilename]] ? @"已设置自定义图标" : @"默认图标";
     }
-    return nil;
+    id stored = [NSUserDefaults.standardUserDefaults objectForKey:item.identifier];
+    if (stored && ![item.controlType isEqual:@"switch"])
+        return [stored description];
+    return [item.detail isKindOfClass:NSString.class] && item.detail.length ? item.detail : @"默认";
 }
-
-#pragma mark - First Launch Agreement
-
-- (void)checkFirstLaunch {
-    BOOL hasAgreed = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYUserAgreementAccepted"];
-
-    if (!hasAgreed) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-          [self showAgreementAlert];
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
+    DYYYSettingDescriptor *item = [self itemAt:path];
+    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
+    cell.accessibilityIdentifier = item.identifier;
+    UIListContentConfiguration *content = cell.defaultContentConfiguration;
+    content.text = item.title;
+    content.secondaryText = self.search.searchBar.text.length ? [NSString stringWithFormat:@"%@ · %@", item.tab, item.category] : item.subTitle;
+    content.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    content.secondaryTextProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+    content.secondaryTextProperties.color = UIColor.secondaryLabelColor;
+    content.secondaryTextProperties.numberOfLines = 0;
+    NSString *symbol = [item.controlType isEqual:@"switch"]       ? @"switch.2"
+                       : [item.controlType isEqual:@"color"]      ? @"paintpalette"
+                       : [item.controlType isEqual:@"slider"]     ? @"slider.horizontal.3"
+                       : [item.controlType isEqual:@"navigation"] ? @"folder"
+                                                                  : @"gearshape";
+    content.image = [UIImage systemImageNamed:symbol];
+    content.imageProperties.tintColor = UIColor.systemBlueColor;
+    cell.contentConfiguration = content;
+    if (item.assetFilename.length) {
+        NSString *folder = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:@"DYYY"];
+        NSString *file = [folder stringByAppendingPathComponent:item.assetFilename];
+        __weak UITableViewCell *weakCell = cell;
+        NSString *identifier = item.identifier;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+          UIImage *image = [UIImage imageWithContentsOfFile:file];
+          void (^apply)(UIImage *) = ^(UIImage *preview) {
+            if (!preview)
+                return;
+            dispatch_async(dispatch_get_main_queue(), ^{
+              UITableViewCell *target = weakCell;
+              if (![target.accessibilityIdentifier isEqual:identifier])
+                  return;
+              UIListContentConfiguration *configuration = [(UIListContentConfiguration *)target.contentConfiguration copy];
+              configuration.image = [preview imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+              configuration.imageProperties.maximumSize = CGSizeMake(32, 32);
+              target.contentConfiguration = configuration;
+            });
+          };
+          if (@available(iOS 15.0, *))
+              [image prepareThumbnailOfSize:CGSizeMake(32, 32) completionHandler:apply];
+          else
+              apply(image);
         });
     }
-}
-
-- (void)showAgreementAlert {
-    UIAlertController *alertController =
-        [UIAlertController alertControllerWithTitle:@"用户协议"
-                                            message:@"本插件为开源项目\n仅供学习交流用途\n如有侵权请联系, GitHub 仓库：huami1314/DYYY\n请遵守当地法律法规, "
-                                                    @"逆向工程仅为学习目的\n盗用源码进行商业用途/发布但未标记开源项目必究\n详情请参阅项目内 MIT 许可证\n\n请输入\"我已阅读并同意继续使用\"以继续使用"
-                                     preferredStyle:UIAlertControllerStyleAlert];
-
-    [alertController addTextFieldWithConfigurationHandler:^(UITextField *_Nonnull textField) {
-      textField.clearButtonMode = UITextFieldViewModeWhileEditing;
-    }];
-
-    UIAlertAction *confirmAction = [UIAlertAction actionWithTitle:@"确认"
-                                                            style:UIAlertActionStyleDefault
-                                                          handler:^(UIAlertAction *_Nonnull action) {
-                                                            UITextField *textField = alertController.textFields.firstObject;
-                                                            NSString *inputText = textField.text;
-
-                                                            if ([inputText isEqualToString:@"我已阅读并同意继续使用"]) {
-                                                                [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"DYYYUserAgreementAccepted"];
-                                                            } else {
-                                                                UIAlertController *errorAlert = [UIAlertController alertControllerWithTitle:@"输入错误"
-                                                                                                                                    message:@"请正确输入"
-                                                                                                                             preferredStyle:UIAlertControllerStyleAlert];
-
-                                                                UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定"
-                                                                                                                   style:UIAlertActionStyleDefault
-                                                                                                                 handler:^(UIAlertAction *_Nonnull action) {
-                                                                                                                   [self showAgreementAlert];
-                                                                                                                 }];
-
-                                                                [errorAlert addAction:okAction];
-                                                                [self presentViewController:errorAlert animated:YES completion:nil];
-                                                            }
-                                                          }];
-
-    UIAlertAction *exitAction = [UIAlertAction actionWithTitle:@"退出"
-                                                         style:UIAlertActionStyleDestructive
-                                                       handler:^(UIAlertAction *_Nonnull action) {
-                                                         exit(0);
-                                                       }];
-
-    [alertController addAction:confirmAction];
-    [alertController addAction:exitAction];
-
-    [self presentViewController:alertController animated:YES completion:nil];
-}
-
-#pragma mark - UITableViewDataSource
-
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return self.settingSections.count;
-}
-
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    switch (section) {
-        case 0:
-            return @"基本设置";
-        case 1:
-            return @"界面设置";
-        case 2:
-            return @"隐藏设置";
-        case 3:
-            return @"顶栏移除";
-        case 4:
-            return @"隐藏面板";
-        case 5:
-            return @"面板设置";
-        case 6:
-            return @"功能设置";
-        case 7:
-            return @"悬浮按钮";
-        default:
-            return @"";
-    }
-}
-
-- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
-    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 44)];
-
-    UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(15, 0, headerView.bounds.size.width - 50, 44)];
-    titleLabel.text = [self tableView:tableView titleForHeaderInSection:section];
-    titleLabel.textColor = [UIColor whiteColor];
-    titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
-    [headerView addSubview:titleLabel];
-
-    UIImageView *arrowImageView = [[UIImageView alloc] initWithFrame:CGRectMake(titleLabel.frame.origin.x + titleLabel.frame.size.width - 30, 15, 14, 14)];
-    arrowImageView.image = [UIImage systemImageNamed:[self.expandedSections containsObject:@(section)] ? @"chevron.down" : @"chevron.right"];
-    arrowImageView.tintColor = [UIColor lightGrayColor];
-    arrowImageView.tag = 100;
-    arrowImageView.contentMode = UIViewContentModeScaleAspectFit;
-    [headerView addSubview:arrowImageView];
-
-    UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
-    button.frame = headerView.bounds;
-    button.tag = section;
-    [button addTarget:self action:@selector(headerTapped:) forControlEvents:UIControlEventTouchUpInside];
-    [headerView addSubview:button];
-
-    return headerView;
-}
-
-- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
-    return 44;
-}
-
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return [self.expandedSections containsObject:@(section)] ? self.settingSections[section].count : 0;
-}
-
-- (void)toggleSection:(UIButton *)sender {
-    NSNumber *section = @(sender.tag);
-    if ([self.expandedSections containsObject:section]) {
-        [self.expandedSections removeObject:section];
+    cell.contentView.alpha = item.isEnable ? 1 : 0.45;
+    if ([item.controlType isEqual:@"switch"]) {
+        UISwitch *control = [UISwitch new];
+        control.on = item.isSwitchOn;
+        control.enabled = item.isEnable;
+        control.accessibilityIdentifier = item.identifier;
+        control.accessibilityLabel = item.title;
+        [control addTarget:self action:@selector(toggle:) forControlEvents:UIControlEventValueChanged];
+        cell.accessoryView = control;
+    } else if ([item.controlType isEqual:@"slider"] || [item.controlType isEqual:@"size"]) {
+        UIStackView *stack = [[UIStackView alloc] init];
+        stack.axis = UILayoutConstraintAxisVertical;
+        stack.spacing = 4;
+        UILabel *value = [UILabel new];
+        value.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+        value.textAlignment = NSTextAlignmentRight;
+        BOOL size = [item.controlType isEqual:@"size"];
+        UISlider *slider = [UISlider new];
+        slider.minimumValue = size ? 20 : 0;
+        slider.maximumValue = size ? 60 : 1;
+        id stored = [NSUserDefaults.standardUserDefaults objectForKey:item.identifier];
+        slider.value = stored ? [stored floatValue] : size ? ([item.identifier isEqual:@"DYYYSpeedButtonSize"] ? 32 : 40) : ([item.identifier isEqual:@"DYYYSheetBlurTransparent"] ? 0.9 : 1);
+        slider.enabled = item.isEnable;
+        slider.accessibilityIdentifier = item.identifier;
+        slider.accessibilityLabel = item.title;
+        objc_setAssociatedObject(slider, @selector(sliderChanged:), value, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [self sliderChanged:slider];
+        [slider addTarget:self action:@selector(sliderChanged:) forControlEvents:UIControlEventValueChanged];
+        [slider addTarget:self action:@selector(sliderEnded:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
+        UIButton *reset = [UIButton buttonWithType:UIButtonTypeSystem];
+        [reset setImage:[UIImage systemImageNamed:@"arrow.counterclockwise"] forState:UIControlStateNormal];
+        reset.accessibilityLabel = [@"恢复默认值：" stringByAppendingString:item.title];
+        [reset addAction:[UIAction actionWithHandler:^(__unused UIAction *action) {
+                 [DYYYSettingsRegistry.current resetItem:item];
+               }]
+            forControlEvents:UIControlEventTouchUpInside];
+        UIStackView *valueRow = [[UIStackView alloc] initWithArrangedSubviews:@[ value, reset ]];
+        valueRow.spacing = 8;
+        [stack addArrangedSubview:valueRow];
+        [stack addArrangedSubview:slider];
+        stack.frame = CGRectMake(0, 0, 136, 52);
+        cell.accessoryView = stack;
     } else {
-        [self.expandedSections addObject:section];
-    }
-
-    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:sender.tag] withRowAnimation:UITableViewRowAnimationFade];
-}
-
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    DYYYSettingItem *item = self.settingSections[indexPath.section][indexPath.row];
-
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"SettingCell"];
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"SettingCell"];
-        cell.textLabel.translatesAutoresizingMaskIntoConstraints = NO;
-        [cell.textLabel.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16].active = YES;
-        [cell.textLabel.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor].active = YES;
-
-        UIView *selectedBackgroundView = [[UIView alloc] init];
-        selectedBackgroundView.backgroundColor = [UIColor colorWithRed:84 / 255.0 green:84 / 255.0 blue:84 / 255.0 alpha:1.0];
-        cell.selectedBackgroundView = selectedBackgroundView;
-    }
-
-    cell.textLabel.text = item.title;
-    cell.textLabel.textColor = [UIColor whiteColor];
-    cell.backgroundColor = [UIColor colorWithWhite:1 alpha:0.1];
-
-    cell.backgroundView = nil;
-
-    if (indexPath.row == [self.settingSections[indexPath.section] count] - 1) {
-        cell.layer.cornerRadius = 10;
-        cell.layer.maskedCorners = kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner;
-        cell.layer.masksToBounds = YES;
-    } else {
-        cell.layer.cornerRadius = 0;
-        cell.layer.maskedCorners = 0;
-    }
-
-    if (item.type == DYYYSettingItemTypeSwitch) {
-        UISwitch *switchView = [[UISwitch alloc] init];
-        [switchView setOn:[[NSUserDefaults standardUserDefaults] boolForKey:item.key]];
-        [switchView addTarget:self action:@selector(switchToggled:) forControlEvents:UIControlEventValueChanged];
-        switchView.tag = indexPath.section * 1000 + indexPath.row;
-        cell.accessoryView = switchView;
-    } else if (item.type == DYYYSettingItemTypeTextField) {
-        UITextField *textField = [[UITextField alloc] initWithFrame:CGRectMake(0, 0, 100, 30)];
-        textField.borderStyle = UITextBorderStyleRoundedRect;
-        textField.placeholder = item.placeholder;
-        textField.attributedPlaceholder = [[NSAttributedString alloc] initWithString:item.placeholder attributes:@{NSForegroundColorAttributeName : [UIColor lightGrayColor]}];
-        textField.text = [[NSUserDefaults standardUserDefaults] objectForKey:item.key];
-        textField.textAlignment = NSTextAlignmentRight;
-        textField.backgroundColor = [UIColor colorWithWhite:1 alpha:0.1];
-        textField.textColor = [UIColor whiteColor];
-
-        [textField addTarget:self action:@selector(textFieldDidChange:) forControlEvents:UIControlEventEditingDidEnd];
-        textField.tag = indexPath.section * 1000 + indexPath.row;
-        cell.accessoryView = textField;
-    } else if (item.type == DYYYSettingItemTypePicker) {
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-
-        UILabel *pickerLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 80, 44)];
-        // 获取当前值
-        id currentValue = [[NSUserDefaults standardUserDefaults] objectForKey:item.key];
-        if (!currentValue) {
-            currentValue = [self defaultValueForKey:item.key];
+        if ([item.controlType isEqual:@"color"]) {
+            UIView *swatch = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 26, 26)];
+            swatch.layer.cornerRadius = 13;
+            swatch.backgroundColor = [DYYYUtils colorFromSchemeHexString:[self valueForItem:item] targetWidth:26] ?: UIColor.secondaryLabelColor;
+            swatch.layer.borderColor = UIColor.separatorColor.CGColor;
+            swatch.layer.borderWidth = 0.5;
+            cell.accessoryView = swatch;
+        } else {
+            content.secondaryText = [@[ content.secondaryText ?: @"", [self valueForItem:item] ] componentsJoinedByString:@"\n"];
+            cell.contentConfiguration = content;
         }
-
-        pickerLabel.text = [self displayValueForKey:item.key value:currentValue];
-        pickerLabel.textColor = [UIColor whiteColor];
-        pickerLabel.textAlignment = NSTextAlignmentRight;
-        pickerLabel.tag = indexPath.section * 1000 + indexPath.row;
-
-        // 添加垂直居中约束
-        pickerLabel.translatesAutoresizingMaskIntoConstraints = NO;
-        UIView *containerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 80, 44)];
-        [containerView addSubview:pickerLabel];
-
-        [NSLayoutConstraint activateConstraints:@[
-            [pickerLabel.centerYAnchor constraintEqualToAnchor:containerView.centerYAnchor], [pickerLabel.leadingAnchor constraintEqualToAnchor:containerView.leadingAnchor],
-            [pickerLabel.trailingAnchor constraintEqualToAnchor:containerView.trailingAnchor]
-        ]];
-
-        cell.accessoryView = containerView;
     }
-
     return cell;
 }
-
-- (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
-    CGFloat sectionInset = 16;
-    cell.contentView.frame = UIEdgeInsetsInsetRect(cell.contentView.frame, UIEdgeInsetsMake(0, sectionInset, 0, sectionInset));
+- (void)toggle:(UISwitch *)sender {
+    DYYYSettingDescriptor *item = [DYYYSettingsRegistry.current itemForIdentifier:sender.accessibilityIdentifier];
+    if (!item.isEnable)
+        return;
+    if (item.switchChangedBlock)
+        item.switchChangedBlock();
+    else
+        [DYYYSettingsRegistry.current setValue:@(sender.on) forItem:item];
+    [[[UISelectionFeedbackGenerator alloc] init] selectionChanged];
+    [self refreshVisibleRows];
 }
-
-#pragma mark - UITableViewDelegate
-
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    DYYYSettingItem *item = self.settingSections[indexPath.section][indexPath.row];
-    if (item.type == DYYYSettingItemTypePicker) {
-        [self showUniversalPickerForIndexPath:indexPath];
+- (void)sliderChanged:(UISlider *)slider {
+    UILabel *value = objc_getAssociatedObject(slider, @selector(sliderChanged:));
+    if ([slider.accessibilityIdentifier isEqual:@"DYYYSheetBlurTransparent"] && slider.value <= 0) {
+        value.text = @"默认 90%";
+        return;
     }
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    value.text = slider.maximumValue > 1 ? [NSString stringWithFormat:@"%.0f pt", slider.value] : [NSString stringWithFormat:@"%.0f%%", slider.value * 100];
 }
-
-- (void)showUniversalPickerForIndexPath:(NSIndexPath *)indexPath {
-    DYYYSettingItem *item = self.settingSections[indexPath.section][indexPath.row];
-
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"选择%@", item.title] message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-
-    NSArray *options = [self optionsForKey:item.key];
-    for (id option in options) {
-        NSString *title = [self displayValueForKey:item.key value:option];
-        UIAlertAction *action = [UIAlertAction actionWithTitle:title
-                                                         style:UIAlertActionStyleDefault
-                                                       handler:^(UIAlertAction *_Nonnull action) {
-                                                         // 保存到对应的key
-                                                         [[NSUserDefaults standardUserDefaults] setObject:option forKey:item.key];
-
-                                                         // 更新对应的cell显示
-                                                         UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
-                                                         UIView *containerView = cell.accessoryView;
-                                                         if (containerView && containerView.subviews.count > 0) {
-                                                             UILabel *pickerLabel = (UILabel *)containerView.subviews.firstObject;
-                                                             if ([pickerLabel isKindOfClass:[UILabel class]]) {
-                                                                 pickerLabel.text = [self displayValueForKey:item.key value:option];
-                                                             }
-                                                         }
-                                                       }];
-        [alert addAction:action];
-    }
-
-    UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil];
-    [alert addAction:cancelAction];
-
-    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-        UITableViewCell *selectedCell = [self.tableView cellForRowAtIndexPath:indexPath];
-        alert.popoverPresentationController.sourceView = selectedCell;
-        alert.popoverPresentationController.sourceRect = selectedCell.bounds;
-    }
-
-    [self presentViewController:alert animated:YES completion:nil];
+- (void)sliderEnded:(UISlider *)slider {
+    DYYYSettingDescriptor *item = [DYYYSettingsRegistry.current itemForIdentifier:slider.accessibilityIdentifier];
+    [DYYYSettingsRegistry.current setValue:[NSString stringWithFormat:@"%.6g", slider.value] forItem:item];
+    [[[UISelectionFeedbackGenerator alloc] init] selectionChanged];
 }
-
-#pragma mark - Actions
-
-- (void)switchToggled:(UISwitch *)sender {
-    NSIndexPath *indexPath = [NSIndexPath indexPathForRow:sender.tag % 1000 inSection:sender.tag / 1000];
-    DYYYSettingItem *item = self.settingSections[indexPath.section][indexPath.row];
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    [defaults setBool:sender.isOn forKey:item.key];
-    if ([item.key isEqualToString:@"DYYYEnableFloatSpeedButton"] || [item.key isEqualToString:@"DYYYSpeedButtonShowX"]) {
-        [FloatingSpeedButton reloadConfiguration];
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {
+    [tableView deselectRowAtIndexPath:path animated:YES];
+    DYYYSettingDescriptor *item = [self itemAt:path];
+    if (!item.isEnable)
+        return;
+    if ([item.controlType isEqual:@"compatibility"]) {
+        [DYYYSettingsHelper showAboutDialog:item.title message:item.subTitle onConfirm:nil];
+        return;
     }
-    if ([item.key isEqualToString:@"DYYYEnableFloatClearButton"] ||
-        [item.key isEqualToString:@"DYYYHideDanmaku"] ||
-        [item.key isEqualToString:@"DYYYRemoveTimeProgress"] ||
-        [item.key isEqualToString:@"DYYYHideTimeProgress"] ||
-        [item.key isEqualToString:@"DYYYHideSlider"] ||
-        [item.key isEqualToString:@"DYYYHideTabBar"] ||
-        [item.key isEqualToString:@"DYYYHideSpeed"] ||
-        [item.key isEqualToString:@"DYYYHideChapter"]) {
-        reloadClearButtonConfiguration();
+    if (item.children.count) {
+        [self.navigationController pushViewController:[[DYYYSettingViewController alloc] initWithSections:item.children title:item.title] animated:YES];
+        return;
     }
-
-    if (sender.isOn) {
-        NSString *conflictingKey = nil;
-        if ([item.key isEqualToString:@"DYYYHideLOTAnimationView"]) {
-            conflictingKey = @"DYYYHideFollowPromptView";
-        } else if ([item.key isEqualToString:@"DYYYHideFollowPromptView"]) {
-            conflictingKey = @"DYYYHideLOTAnimationView";
-        }
-
-        if (conflictingKey) {
-            [defaults setBool:NO forKey:conflictingKey];
-            [self.tableView reloadData];
-        }
+    if (self.search.isActive && self.search.searchBar.text.length) {
+        self.search.searchBar.text = @"";
+        self.search.active = NO;
+        [self.navigationController pushViewController:[[DYYYSettingViewController alloc] initWithSections:@[ [self section:item.category items:@[ item ]] ] title:item.title] animated:YES];
+        return;
     }
+    if ([item.controlType isEqual:@"switch"])
+        return;
+    if ([item.controlType isEqual:@"number"]) {
+        DYYYNativeValueEditor *editor = [DYYYNativeValueEditor new];
+        editor.title = item.title;
+        editor.initialText = [[NSUserDefaults.standardUserDefaults objectForKey:item.identifier] description] ?: @"";
+        editor.scale = [item.identifier containsString:@"Scale"];
+        editor.integerThreshold = [@[ @"DYYYFilterLowLikes", @"DYYYFilterTimeLimit" ] containsObject:item.identifier];
+        editor.saved = ^(NSString *text) {
+          [DYYYSettingsRegistry.current setValue:text forItem:item];
+        };
+        [self.navigationController pushViewController:editor animated:YES];
+        return;
+    }
+    if ([item.controlType isEqual:@"color"]) {
+        self.colorItem = item;
+        UIColorPickerViewController *picker = [UIColorPickerViewController new];
+        picker.delegate = self;
+        picker.supportsAlpha = NO;
+        UIColor *initial = [DYYYUtils colorFromSchemeHexString:[self valueForItem:item] targetWidth:26];
+        CGFloat r, g, b, a;
+        picker.selectedColor = [initial getRed:&r green:&g blue:&b alpha:&a] ? initial : UIColor.systemBlueColor;
+        [self presentViewController:picker animated:YES completion:nil];
+        return;
+    }
+    void (^action)(void) = item.cellTappedBlock;
+    if (!action) {
+        [self editExactValue:item];
+        return;
+    }
+    if ([@[ @"DYYYCleanCache", @"DYYYRestoreSettings", @"DeleteABTestConfigFile", @"LoadABTestConfigFile" ] containsObject:item.identifier]) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:item.title message:@"此操作会修改已有数据。请确认已保存需要保留的内容。" preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"继续"
+                                                  style:UIAlertActionStyleDestructive
+                                                handler:^(__unused UIAlertAction *a) {
+                                                  action();
+                                                }]];
+        [self presentViewController:alert animated:YES completion:nil];
+    } else
+        action();
 }
-
-- (void)textFieldDidChange:(UITextField *)textField {
-    NSIndexPath *indexPath = [NSIndexPath indexPathForRow:textField.tag % 1000 inSection:textField.tag / 1000];
-    DYYYSettingItem *item = self.settingSections[indexPath.section][indexPath.row];
-    [[NSUserDefaults standardUserDefaults] setObject:textField.text forKey:item.key];
-    if ([item.key isEqualToString:@"DYYYSpeedSettings"] || [item.key isEqualToString:@"DYYYSpeedButtonSize"]) {
-        [FloatingSpeedButton reloadConfiguration];
-    }
-    if ([item.key isEqualToString:@"DYYYEnableFloatClearButtonSize"]) {
-        reloadClearButtonConfiguration();
-    }
+- (void)editExactValue:(DYYYSettingDescriptor *)item {
+    [DYYYSettingsHelper showTextInputAlert:item.title
+                               defaultText:[NSUserDefaults.standardUserDefaults objectForKey:item.identifier]
+                               placeholder:item.subTitle
+                                 onConfirm:^(NSString *text) {
+                                   [DYYYSettingsRegistry.current setValue:text forItem:item];
+                                 }
+                                  onCancel:nil];
 }
-
-- (void)headerTapped:(UIButton *)sender {
-    NSNumber *section = @(sender.tag);
-    if ([self.expandedSections containsObject:section]) {
-        [self.expandedSections removeObject:section];
-    } else {
-        [self.expandedSections addObject:section];
-    }
-
-    UIView *headerView = [self.tableView headerViewForSection:sender.tag];
-    UIImageView *arrowImageView = [headerView viewWithTag:100];
-
-    [UIView animateWithDuration:0.3
-                     animations:^{
-                       arrowImageView.image = [UIImage systemImageNamed:[self.expandedSections containsObject:section] ? @"chevron.down" : @"chevron.right"];
-                     }];
-
-    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:sender.tag] withRowAnimation:UITableViewRowAnimationFade];
+- (void)colorPickerViewControllerDidFinish:(UIColorPickerViewController *)controller {
+    CGFloat r, g, b, a;
+    if (![controller.selectedColor getRed:&r green:&g blue:&b alpha:&a])
+        return;
+    NSString *hex = [NSString stringWithFormat:@"#%02X%02X%02X", (int)round(r * 255), (int)round(g * 255), (int)round(b * 255)];
+    [DYYYSettingsRegistry.current setValue:hex forItem:self.colorItem];
+    self.colorItem = nil;
 }
-
+- (UIContextMenuConfiguration *)tableView:(UITableView *)tableView contextMenuConfigurationForRowAtIndexPath:(NSIndexPath *)path point:(CGPoint)point {
+    DYYYSettingDescriptor *item = [self itemAt:path];
+    if ([item.controlType isEqual:@"navigation"] || [item.controlType isEqual:@"compatibility"] || [item.controlType isEqual:@"action"])
+        return nil;
+    __weak typeof(self) weakSelf = self;
+    return [UIContextMenuConfiguration configurationWithIdentifier:nil
+                                                   previewProvider:nil
+                                                    actionProvider:^UIMenu *(NSArray *suggested) {
+                                                      UIAction *reset = [UIAction actionWithTitle:@"恢复默认值"
+                                                                                            image:[UIImage systemImageNamed:@"arrow.counterclockwise"]
+                                                                                       identifier:nil
+                                                                                          handler:^(__unused UIAction *a) {
+                                                                                            [DYYYSettingsRegistry.current resetItem:item];
+                                                                                          }];
+                                                      UIAction *exact = [UIAction actionWithTitle:@"精确输入（支持原有特殊值）"
+                                                                                            image:[UIImage systemImageNamed:@"keyboard"]
+                                                                                       identifier:nil
+                                                                                          handler:^(__unused UIAction *a) {
+                                                                                            [weakSelf editExactValue:item];
+                                                                                          }];
+                                                      return [UIMenu menuWithChildren:[item.controlType isEqual:@"switch"] ? @[ reset ] : @[ exact, reset ]];
+                                                    }];
+}
 @end

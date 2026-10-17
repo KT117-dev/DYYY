@@ -3,7 +3,7 @@
 本项目是基于 Theos/Logos 的抖音 UI 调整 Tweak。当前仓库 README 标注仅在 **抖音 36.5.0** 版本测试；回答需求时请以仓库现状为准，不要沿用旧版本描述。
 
 ## 工程关键点
-- **Hook 入口**：`DYYY.xm` 负责 Feed、浮窗、全局透明度与 Tab Bar 高度等通用 Hook；`DYYYSettings.xm` 负责抖音设置页相关 Hook（`AWESettingBaseViewController`、`AWELeftSideBarWeatherLabel` 等）并构造 DYYY 自定义设置。
+- **Hook 入口**：`DYYY.xm` 负责 Feed、浮窗、全局透明度与 Tab Bar 高度等通用 Hook，并通过 `DYYYSettingsGesture` 把双指长按交给原生设置协调器。设置不再注入抖音设置页或侧边栏。
 - **业务核心**：`DYYYManager` 统一处理媒体下载、批量任务、Live Photo/GIF/WebP 转换及保存流程，内部维护 `NSOperationQueue` 与下载任务/回调映射；`DYYYSettingsHelper` 管理设置依赖、入口查找、用户协议弹窗；`DYYYUtils` 处理 IP 属地、颜色、窗口查找、缓存路径等可复用逻辑。
 - **UI 组件**：所有自定义视图/弹窗（如 `DYYYBottomAlertView`、`DYYYFloatSpeedButton`、`DYYYAboutDialogView` 等）都有 `.h/.m` 配对文件，并在设置控制器中组合使用。
 - **模型/数据**：`CityManager` 负责本地城市映射与 GeoNames 查询；GeoNames 结果缓存逻辑在 `DYYYUtils`；`DYYYConstants.h`、`DYYYSettingsHelper` 中定义的 Key 控制远程 ABTest、依赖关系与通知。
@@ -12,10 +12,18 @@
 ## 源码目录与归属
 - `src/Hooks/`：`DYYY.xm`（主 Hook 和三个液体玻璃效果）、`DYYYABTestHook.(h/xm)`、`DYYYLongPressPanel.xm`。
 - `src/Core/`：`DYYYManager.(h/m)`、`DYYYUtils.(h/m)`、`DYYYVideoPlaybackGuard.(h/m)`。
-- `src/Settings/`：`DYYYSettings.xm`、`DYYYSettingViewController.(h/m)`、`DYYYSettingsHelper.(h/m)`；图片和备份 Picker 代理合并在 SettingsHelper 中。
+- `src/Settings/`：`DYYYSettingsRegistry.(h/m)` 管理完整目录、元数据及兼容业务回调；`DYYYSettingViewController.(h/m)` 管理原生分类列表、搜索、控件；`DYYYSettingsCoordinator.(h/m)` 管理手势、Scene、系统 Tab Bar 和 Sheet；`DYYYSettingsHelper.(h/m)` 管理原有依赖及读写、文件操作和 Picker 代理。
 - `src/UI/`：独立的弹窗、列表、选择器、Toast、浮动按钮，头文件与实现成对存放。
 - `src/Support/`：`AwemeHeaders.h`、`DYYYConstants.h`、`CityManager.(h/m)`、`AWMSafeDispatchTimer.(h/m)`。
 - Makefile 显式列出编译单元，通过 `DYYY_SOURCE_DIRS` 提供各模块头文件搜索路径。新增或移动源码时同步维护构建路径和 CI 的 `src/**` 规则。
+
+## 设置中心约定
+- 唯一日常入口是正常浏览页面的双指长按；`DYYYDisableSettingsGesture` 和 `DYYYEntrance` 继续保留存储，但只显示兼容说明，不能锁死入口。
+- 设置 UI 使用公开 UIKit API，默认系统 Tab Bar 在 iOS 26 自行渲染 Liquid Glass；不加自制底栏或覆盖系统材质。旧系统保留原生降级。
+- 新设置先进入统一设置目录，再匹配控件。相同持久化 key 必须共享状态；旧标题、分类通过搜索别名兼容。
+- 数值和颜色仍保存原 NSString 格式，BOOL 保持 NSNumber；恢复默认删除显式值，不创建新的全局默认。
+- `DYYYSettingsHelper` 的 `settingsDependencyConfig` 是依赖和互斥的唯一来源；保留特殊回调。配置通知使用异步主线程分发，不使用 mainQueue 的同步通知投递。
+- 备份保留 `DYYYIconsBase64` 和原八个图标文件名，导入需检查类型、键前缀和图标文件名。图片选择使用 PHPicker，GIF 数据原样保留。
 
 ## 液体玻璃
 - 实现直接合并在 `src/Hooks/DYYY.xm`，按底栏、评论区、通知栏分段，私有状态均有功能前缀。
@@ -98,7 +106,7 @@
 ## 常见工作流示例
 1. **新增抖音 UI Hook**
    - 在 `AwemeHeaders.h` 声明目标类/属性。
-   - 于 `DYYY.xm` 或 `DYYYSettings.xm` 新增 `%hook`，逻辑用 `NSUserDefaults` 开关控制。
+   - 于对应 Hooks 文件新增 `%hook`，逻辑用 `NSUserDefaults` 开关控制；设置项注册在 Registry，不再 Hook 抖音设置 UI。
    - 如果需要 UI，则在 `DYYY` 前缀视图中实现并在 Hook 内调用。
 2. **扩展设置开关**
    - 在 `DYYYSettingsHelper` 为依赖体系补充 key。

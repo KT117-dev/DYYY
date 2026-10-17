@@ -47,7 +47,8 @@ DYYY_FILES = \
     src/Core/DYYYUtils.m \
     src/Core/DYYYVideoPlaybackGuard.m \
     src/Settings/DYYYSettingViewController.m \
-    src/Settings/DYYYSettings.xm \
+    src/Settings/DYYYSettingsRegistry.m \
+    src/Settings/DYYYSettingsCoordinator.m \
     src/Settings/DYYYSettingsHelper.m \
     src/UI/DYYYAboutDialogView.m \
     src/UI/DYYYBottomAlertView.m \
@@ -68,7 +69,7 @@ DYYY_CCFLAGS = -std=gnu++26
 $(foreach source,$(filter %.c %.m,$(DYYY_FILES)),$(eval $(source)_CFLAGS += -std=gnu23))
 # 各架构保留独立 LTO 中间对象，供 Theos 生成调试符号。
 DYYY_LDFLAGS = -O3 -flto=full -Wl,-dead_strip -Wl,-object_path_lto,$(THEOS_OBJ_DIR)/DYYY.lto.o -weak_framework AVFAudio
-DYYY_FRAMEWORKS = CoreAudio
+DYYY_FRAMEWORKS = CoreAudio PhotosUI
 DYYY_LOGOS_DEFAULT_GENERATOR = internal
 
 export THEOS_STRICT_LOGOS=0

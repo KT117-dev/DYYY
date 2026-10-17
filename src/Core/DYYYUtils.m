@@ -1351,10 +1351,7 @@ static void DYYYApplyDisplayLocationToLabel(UILabel *label, NSString *displayLoc
 }
 
 + (void)showToast:(NSString *)text {
-    Class toastClass = NSClassFromString(@"DUXToast");
-    if (toastClass && [toastClass respondsToSelector:@selector(showText:)]) {
-        [toastClass performSelector:@selector(showText:) withObject:text];
-    }
+    [DYYYToast showMessage:text];
 }
 
 + (BOOL)usesDouyinLightBackground {

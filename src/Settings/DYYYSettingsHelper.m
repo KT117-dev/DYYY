@@ -1,6 +1,11 @@
 #import "DYYYSettingsHelper.h"
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import "DYYYFloatClearButton.h"
+#import "DYYYFloatSpeedButton.h"
+#import "DYYYSettingViewController.h"
+#import "DYYYSettingsCoordinator.h"
+#import "DYYYSettingsRegistry.h"
 #import "DYYYUtils.h"
 
 #import "DYYYAboutDialogView.h"
@@ -9,6 +14,169 @@
 
 @implementation DYYYSettingsHelper
 
+#pragma mark - 原生备份与恢复
++ (NSArray<NSString *> *)backupIconNames {
+    return @[ @"like_before.png", @"like_after.png", @"comment.png", @"unfavorite.png", @"favorite.png", @"share.png", @"tab_plus.png", @"qingping.gif" ];
+}
++ (NSDictionary *)validatedBackup:(id)decoded {
+    if (![decoded isKindOfClass:NSDictionary.class] || ![NSPropertyListSerialization propertyList:decoded isValidForFormat:NSPropertyListBinaryFormat_v1_0])
+        return nil;
+    NSMutableDictionary *values = [NSMutableDictionary dictionary];
+    NSMutableDictionary *icons = [NSMutableDictionary dictionary];
+    for (id key in decoded) {
+        if (![key isKindOfClass:NSString.class] || ![key hasPrefix:@"DYYY"])
+            return nil;
+        if ([key isEqual:@"DYYYIconsBase64"]) {
+            id images = decoded[key];
+            if (![images isKindOfClass:NSDictionary.class])
+                return nil;
+            for (id name in images) {
+                id encoded = images[name];
+                NSData *data = [encoded isKindOfClass:NSString.class] ? [[NSData alloc] initWithBase64EncodedString:encoded options:0] : nil;
+                if (![self.backupIconNames containsObject:name] || !data.length)
+                    return nil;
+                icons[name] = data;
+            }
+        } else
+            values[key] = decoded[key];
+    }
+    return @{@"values" : values, @"icons" : icons};
+}
++ (UIAlertController *)showProgress:(NSString *)title progress:(NSProgress *)progress {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:@"正在处理，请稍候…" preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消"
+                                              style:UIAlertActionStyleCancel
+                                            handler:^(__unused UIAlertAction *action) {
+                                              [progress cancel];
+                                            }]];
+    [DYYYSettingsCoordinator.presenter presentViewController:alert animated:YES completion:nil];
+    return alert;
+}
++ (void)exportSettingsBackup {
+    NSProgress *progress = [NSProgress progressWithTotalUnitCount:1];
+    UIAlertController *busy = [self showProgress:@"准备备份" progress:progress];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+      NSMutableDictionary *settings = [NSMutableDictionary dictionary];
+      NSDictionary *defaults = NSUserDefaults.standardUserDefaults.dictionaryRepresentation;
+      for (NSString *key in defaults)
+          if ([key hasPrefix:@"DYYY"])
+              settings[key] = defaults[key];
+      NSString *folder = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:@"DYYY"];
+      NSMutableDictionary *icons = [NSMutableDictionary dictionary];
+      for (NSString *name in self.backupIconNames) {
+          if (progress.cancelled)
+              break;
+          NSData *data = [NSData dataWithContentsOfFile:[folder stringByAppendingPathComponent:name]];
+          if (data)
+              icons[name] = [data base64EncodedStringWithOptions:0];
+      }
+      if (icons.count)
+          settings[@"DYYYIconsBase64"] = icons;
+      NSError *error;
+      NSData *json = [NSJSONSerialization dataWithJSONObject:DYYYJSONSafeObject(settings) options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:&error];
+      NSDateFormatter *formatter = [NSDateFormatter new];
+      formatter.dateFormat = @"yyyyMMdd_HHmmss";
+      NSString *filename = [NSString stringWithFormat:@"DYYY_Backup_%@.json", [formatter stringFromDate:NSDate.date]];
+      NSString *path = [DYYYUtils cachePathForFilename:filename];
+      BOOL saved = !progress.cancelled && json && [json writeToFile:path options:NSDataWritingAtomic error:&error];
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [busy dismissViewControllerAnimated:YES
+                                 completion:^{
+                                   if (!saved || progress.cancelled) {
+                                       if (saved)
+                                           [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+                                       if (!progress.cancelled)
+                                           [DYYYUtils showToast:error.localizedDescription ?: @"备份失败"];
+                                       return;
+                                   }
+                                   UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initWithURLs:@[ [NSURL fileURLWithPath:path] ]
+                                                                                                                          inMode:UIDocumentPickerModeExportToService];
+                                   DYYYBackupPickerDelegate *delegate = [DYYYBackupPickerDelegate new];
+                                   delegate.tempFilePath = path;
+                                   delegate.completionBlock = ^(__unused NSURL *url) {
+                                     [DYYYUtils showToast:@"备份已导出"];
+                                   };
+                                   picker.delegate = delegate;
+                                   objc_setAssociatedObject(picker, @selector(exportSettingsBackup), delegate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                                   [DYYYSettingsCoordinator.presenter presentViewController:picker animated:YES completion:nil];
+                                 }];
+      });
+    });
+}
++ (void)importSettingsBackup {
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[ @"public.json", @"public.text" ] inMode:UIDocumentPickerModeImport];
+    DYYYBackupPickerDelegate *delegate = [DYYYBackupPickerDelegate new];
+    delegate.completionBlock = ^(NSURL *url) {
+      [self inspectBackupURL:url];
+    };
+    picker.delegate = delegate;
+    objc_setAssociatedObject(picker, @selector(importSettingsBackup), delegate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [DYYYSettingsCoordinator.presenter presentViewController:picker animated:YES completion:nil];
+}
++ (void)inspectBackupURL:(NSURL *)url {
+    NSProgress *progress = [NSProgress progressWithTotalUnitCount:1];
+    UIAlertController *busy = [self showProgress:@"读取备份" progress:progress];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+      BOOL access = [url startAccessingSecurityScopedResource];
+      NSError *error;
+      NSData *json = [NSData dataWithContentsOfURL:url options:0 error:&error];
+      if (access)
+          [url stopAccessingSecurityScopedResource];
+      id decoded = json ? [NSJSONSerialization JSONObjectWithData:json options:0 error:&error] : nil;
+      NSDictionary *backup = [self validatedBackup:decoded];
+      BOOL valid = backup != nil;
+      NSDictionary *values = backup[@"values"], *icons = backup[@"icons"];
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [busy dismissViewControllerAnimated:YES
+                                 completion:^{
+                                   if (progress.cancelled)
+                                       return;
+                                   if (!valid) {
+                                       [DYYYUtils showToast:error.localizedDescription ?: @"备份包含无效配置或图标，未恢复"];
+                                       return;
+                                   }
+                                   UIAlertController *confirm =
+                                       [UIAlertController alertControllerWithTitle:@"恢复备份"
+                                                                           message:[NSString stringWithFormat:@"将覆盖 %lu 项配置和 %lu 个图标。其他配置保留。完成后需重启应用。",
+                                                                                                              (unsigned long)values.count, (unsigned long)icons.count]
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+                                   [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+                                   [confirm addAction:[UIAlertAction actionWithTitle:@"恢复"
+                                                                               style:UIAlertActionStyleDestructive
+                                                                             handler:^(__unused UIAlertAction *action) {
+                                                                               [self applyBackupValues:values icons:icons];
+                                                                             }]];
+                                   [DYYYSettingsCoordinator.presenter presentViewController:confirm animated:YES completion:nil];
+                                 }];
+      });
+    });
+}
++ (void)applyBackupValues:(NSDictionary *)values icons:(NSDictionary *)icons {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+      NSString *folder = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:@"DYYY"];
+      NSError *error;
+      BOOL success = !icons.count || [NSFileManager.defaultManager createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:&error];
+      for (NSString *name in icons) {
+          if (!success)
+              break;
+          success = [icons[name] writeToFile:[folder stringByAppendingPathComponent:name] options:NSDataWritingAtomic error:&error];
+      }
+      if (success)
+          for (NSString *key in values) [NSUserDefaults.standardUserDefaults setObject:values[key] forKey:key];
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (!success) {
+            [DYYYUtils showToast:error.localizedDescription ?: @"图标恢复失败，配置未覆盖；部分图标可能已更新"];
+            return;
+        }
+        [FloatingSpeedButton reloadConfiguration];
+        reloadClearButtonConfiguration();
+        [NSNotificationCenter.defaultCenter postNotificationName:@"DYYYGlobalTransparencyDidChangeNotification" object:nil];
+        [NSNotificationCenter.defaultCenter postNotificationName:DYYYSettingsDidChangeNotification object:nil];
+        [DYYYUtils showToast:@"设置与图标已恢复，请重启应用"];
+      });
+    });
+}
+
 // 获取用户默认设置
 + (BOOL)getUserDefaults:(NSString *)key {
     return [[NSUserDefaults standardUserDefaults] boolForKey:key];
@@ -16,11 +184,44 @@
 
 // 设置用户默认设置
 + (void)setUserDefaults:(id)object forKey:(NSString *)key {
-    [[NSUserDefaults standardUserDefaults] setObject:object forKey:key];
+    if (!key.length)
+        return;
+    if ([@[ @"DYYYRemoteConfigURL", @"DYYYInterfaceDownload" ] containsObject:key] && [object isKindOfClass:NSString.class] && [object length]) {
+        NSURLComponents *url = [NSURLComponents componentsWithString:object];
+        if (![@[ @"http", @"https" ] containsObject:url.scheme.lowercaseString] || !url.host.length) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+              [DYYYUtils showToast:@"请输入有效的 HTTP 或 HTTPS 地址"];
+            });
+            return;
+        }
+    }
+    if (object)
+        [NSUserDefaults.standardUserDefaults setObject:object forKey:key];
+    else
+        [NSUserDefaults.standardUserDefaults removeObjectForKey:key];
+    NSMutableArray *recent = [[NSUserDefaults.standardUserDefaults arrayForKey:@"DYYYRecentSettings"] mutableCopy] ?: [NSMutableArray array];
+    [recent removeObject:key];
+    [recent insertObject:key atIndex:0];
+    if (recent.count > 12)
+        [recent removeLastObject];
+    [NSUserDefaults.standardUserDefaults setObject:recent forKey:@"DYYYRecentSettings"];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [FloatingSpeedButton reloadConfiguration];
+      reloadClearButtonConfiguration();
+      if ([key isEqual:@"DYYYGlobalTransparency"])
+          [NSNotificationCenter.defaultCenter postNotificationName:@"DYYYGlobalTransparencyDidChangeNotification" object:nil];
+      [NSNotificationCenter.defaultCenter postNotificationName:DYYYSettingsDidChangeNotification object:key];
+    });
 }
 
 // 显示自定义关于弹窗
 + (void)showAboutDialog:(NSString *)title message:(NSString *)message onConfirm:(void (^)(void))onConfirm {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [self showAboutDialog:title message:message onConfirm:onConfirm];
+        });
+        return;
+    }
     DYYYAboutDialogView *aboutDialog = [[DYYYAboutDialogView alloc] initWithTitle:title message:message];
     aboutDialog.onConfirm = onConfirm;
     [aboutDialog show];
@@ -28,8 +229,24 @@
 
 // 显示文本输入弹窗（完整版本）
 + (void)showTextInputAlert:(NSString *)title defaultText:(NSString *)defaultText placeholder:(NSString *)placeholder onConfirm:(void (^)(NSString *text))onConfirm onCancel:(void (^)(void))onCancel {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [self showTextInputAlert:title defaultText:defaultText placeholder:placeholder onConfirm:onConfirm onCancel:onCancel];
+        });
+        return;
+    }
     DYYYCustomInputView *inputView = [[DYYYCustomInputView alloc] initWithTitle:title defaultText:defaultText placeholder:placeholder];
-    inputView.onConfirm = onConfirm;
+    inputView.onConfirm = ^(NSString *text) {
+      if (text.length && ([title containsString:@"URL"] || [title containsString:@"地址"] || [title containsString:@"接口"])) {
+          NSURLComponents *url = [NSURLComponents componentsWithString:text];
+          if (![@[ @"http", @"https" ] containsObject:url.scheme.lowercaseString] || !url.host.length) {
+              [DYYYUtils showToast:@"请输入有效的 HTTP 或 HTTPS 地址"];
+              return;
+          }
+      }
+      if (onConfirm)
+          onConfirm(text);
+    };
     inputView.onCancel = onCancel;
     [inputView show];
 }
@@ -67,8 +284,7 @@
 
           // ===== 条件依赖配置 =====
           // 一些设置项依赖于多个其他设置项的复杂条件
-          @"conditionalDependencies" : @{
-          },
+          @"conditionalDependencies" : @{},
 
           // ===== 冲突配置 =====
           // 当源设置项开启时，会自动关闭目标设置项
@@ -87,7 +303,7 @@
 
           // ===== 互斥激活配置 =====
           // 当源设置项关闭时，目标设置项才能激活
-          @"mutualExclusions" : @{@"DYYYDanmuRainbowRotating" : @[ @"DYYYDanmuColor" ], @"DYYYEnableRandomGradient" : @[ @"DYYYLabelColor" ], @"DYYYSkipPhoto": @[@"DYYYSkipPhotoText"]},
+          @"mutualExclusions" : @{@"DYYYDanmuRainbowRotating" : @[ @"DYYYDanmuColor" ], @"DYYYEnableRandomGradient" : @[ @"DYYYLabelColor" ], @"DYYYSkipPhoto" : @[ @"DYYYSkipPhotoText" ]},
 
           // ===== 值依赖配置 =====
           // 基于字符串值的依赖关系
@@ -231,36 +447,7 @@ static BOOL settingActive(NSString *identifier) {
     return NO;
 }
 
-static void collectSettingsVCs(UIViewController *vc, NSMutableArray *array) {
-    if ([vc isKindOfClass:NSClassFromString(@"AWESettingBaseViewController")]) {
-        [array addObject:vc];
-    }
-    for (UIViewController *child in vc.childViewControllers) {
-        collectSettingsVCs(child, array);
-    }
-    if (vc.presentedViewController) {
-        collectSettingsVCs(vc.presentedViewController, array);
-    }
-    if ([vc isKindOfClass:[UINavigationController class]]) {
-        for (UIViewController *c in ((UINavigationController *)vc).viewControllers) {
-            collectSettingsVCs(c, array);
-        }
-    }
-}
-
-static NSArray *allSettingsViewControllers(void) {
-    UIWindow *window = [DYYYUtils getActiveWindow];
-    if (!window) {
-        window = [UIApplication sharedApplication].windows.firstObject;
-    }
-    NSMutableArray *result = [NSMutableArray array];
-    if (window.rootViewController) {
-        collectSettingsVCs(window.rootViewController, result);
-    }
-    return result;
-}
-
-+ (void)applyDependencyRulesForItem:(AWESettingItemModel *)item {
++ (void)applyDependencyRulesForItem:(DYYYSettingDescriptor *)item {
     NSString *itemIdentifier = item.identifier;
     if (itemIdentifier.length == 0) {
         item.isEnable = YES;
@@ -353,110 +540,17 @@ static NSArray *allSettingsViewControllers(void) {
 }
 + (void)updateConflictingItemUIState:(NSString *)identifier withValue:(BOOL)value {
     [self setUserDefaults:@(value) forKey:identifier];
-
-    for (AWESettingBaseViewController *settingsVC in allSettingsViewControllers()) {
-        AWESettingsViewModel *viewModel = (AWESettingsViewModel *)[settingsVC viewModel];
-        if (!viewModel || ![viewModel respondsToSelector:@selector(sectionDataArray)])
-            continue;
-
-        NSArray *sectionDataArray = [viewModel sectionDataArray];
-        for (AWESettingSectionModel *section in sectionDataArray) {
-            if (![section respondsToSelector:@selector(itemArray)])
-                continue;
-            for (id itemObj in section.itemArray) {
-                if (![itemObj isKindOfClass:NSClassFromString(@"AWESettingItemModel")])
-                    continue;
-                AWESettingItemModel *item = (AWESettingItemModel *)itemObj;
-                if ([item.identifier isEqualToString:identifier]) {
-                    if (item.cellType == 6 || item.cellType == 37) {
-                        item.isSwitchOn = value;
-                    }
-                    item.isEnable = value;
-                    [item refreshCell];
-                    break;
-                }
-            }
-        }
-    }
 }
-
 + (void)updateDependentItemsForSetting:(NSString *)identifier value:(id)value {
-    NSDictionary *dependencies = [self settingsDependencyConfig][@"dependencies"];
-    NSDictionary *mutualExclusions = [self settingsDependencyConfig][@"mutualExclusions"];
-    NSDictionary *valueDependencies = [self settingsDependencyConfig][@"valueDependencies"];
-    NSDictionary *conflicts = [self settingsDependencyConfig][@"conflicts"];
-    NSDictionary *synchronizations = [self settingsDependencyConfig][@"synchronizations"];
-    NSDictionary *conditionalSourceTargets = DYYYConditionalSourceTargetsLookup();
-
-    NSArray *allVCs = allSettingsViewControllers();
-    for (AWESettingBaseViewController *settingsVC in allVCs) {
-        AWESettingsViewModel *viewModel = (AWESettingsViewModel *)[settingsVC viewModel];
-        if (!viewModel || ![viewModel respondsToSelector:@selector(sectionDataArray)])
-            continue;
-
-        NSArray *sectionDataArray = [viewModel sectionDataArray];
-
-        NSMutableSet *itemsToUpdate = [NSMutableSet set];
-
-        NSArray *directDependents = dependencies[identifier];
-        if (directDependents) {
-            [itemsToUpdate addObjectsFromArray:directDependents];
-        }
-
-        NSArray *exclusiveItems = mutualExclusions[identifier];
-        if (exclusiveItems) {
-            [itemsToUpdate addObjectsFromArray:exclusiveItems];
-        }
-
-        NSArray *conflictItems = conflicts[identifier];
-        if (conflictItems) {
-            [itemsToUpdate addObjectsFromArray:conflictItems];
-        }
-
-        // Add synchronized items to the update list
-        NSArray *itemsSynchronizedByMe = synchronizations[identifier];
-        if (itemsSynchronizedByMe) {
-            [itemsToUpdate addObjectsFromArray:itemsSynchronizedByMe];
-        }
-
-        NSArray *conditionalTargets = conditionalSourceTargets[identifier];
-        if (conditionalTargets.count > 0) {
-            [itemsToUpdate addObjectsFromArray:conditionalTargets];
-        }
-
-        NSDictionary *valueDepInfo = valueDependencies[identifier];
-        if (valueDepInfo) {
-            NSArray *dependentItems = valueDepInfo[@"dependents"];
-            if (dependentItems) {
-                [itemsToUpdate addObjectsFromArray:dependentItems];
-            }
-        }
-
-        for (AWESettingSectionModel *section in sectionDataArray) {
-            if (![section respondsToSelector:@selector(itemArray)])
-                continue;
-
-            NSArray *itemArray = section.itemArray;
-            for (id itemObj in itemArray) {
-                if (![itemObj isKindOfClass:NSClassFromString(@"AWESettingItemModel")])
-                    continue;
-
-                AWESettingItemModel *item = (AWESettingItemModel *)itemObj;
-                if ([itemsToUpdate containsObject:item.identifier]) {
-                    [self applyDependencyRulesForItem:item];
-                    [item refreshCell];
-                }
-            }
-        }
-    }
+    [[DYYYSettingsRegistry current] refreshDependencies];
 }
 
-+ (AWESettingItemModel *)createSettingItem:(NSDictionary *)dict {
++ (DYYYSettingDescriptor *)createSettingItem:(NSDictionary *)dict {
     return [self createSettingItem:dict cellTapHandlers:nil];
 }
 
-+ (AWESettingItemModel *)createSettingItem:(NSDictionary *)dict cellTapHandlers:(NSMutableDictionary *)cellTapHandlers {
-    AWESettingItemModel *item = [[NSClassFromString(@"AWESettingItemModel") alloc] init];
++ (DYYYSettingDescriptor *)createSettingItem:(NSDictionary *)dict cellTapHandlers:(NSMutableDictionary *)cellTapHandlers {
+    DYYYSettingDescriptor *item = [[DYYYSettingDescriptor.class alloc] init];
     item.identifier = dict[@"identifier"];
     item.title = dict[@"title"];
     item.subTitle = dict[@"subTitle"];
@@ -496,9 +590,9 @@ static NSArray *allSettingsViewControllers(void) {
         };
         item.cellTappedBlock = cellTapHandlers[item.identifier];
     } else if (item.cellType == 6 || item.cellType == 37) {
-        __weak AWESettingItemModel *weakItem = item;
+        __weak DYYYSettingDescriptor *weakItem = item;
         item.switchChangedBlock = ^{
-          __strong AWESettingItemModel *strongItem = weakItem;
+          __strong DYYYSettingDescriptor *strongItem = weakItem;
           if (strongItem) {
               if (!strongItem.isEnable)
                   return;
@@ -515,8 +609,6 @@ static NSArray *allSettingsViewControllers(void) {
 
 #pragma mark
 
-extern void *kViewModelKey;
-
 static void showIconOptionsDialog(NSString *title, UIImage *previewImage, NSString *saveFilename, void (^onClear)(void), void (^onSelect)(void)) {
     DYYYIconOptionsDialogView *optionsDialog = [[DYYYIconOptionsDialogView alloc] initWithTitle:title previewImage:previewImage];
     optionsDialog.onClear = onClear;
@@ -524,8 +616,9 @@ static void showIconOptionsDialog(NSString *title, UIImage *previewImage, NSStri
     [optionsDialog show];
 }
 
-+ (AWESettingItemModel *)createIconCustomizationItemWithIdentifier:(NSString *)identifier title:(NSString *)title svgIcon:(NSString *)svgIconName saveFile:(NSString *)saveFilename {
-    AWESettingItemModel *item = [[NSClassFromString(@"AWESettingItemModel") alloc] init];
++ (DYYYSettingDescriptor *)createIconCustomizationItemWithIdentifier:(NSString *)identifier title:(NSString *)title svgIcon:(NSString *)svgIconName saveFile:(NSString *)saveFilename {
+    DYYYSettingDescriptor *item = [[DYYYSettingDescriptor.class alloc] init];
+    item.assetFilename = saveFilename;
     item.identifier = identifier;
     item.title = title;
 
@@ -542,16 +635,16 @@ static void showIconOptionsDialog(NSString *title, UIImage *previewImage, NSStri
     item.colorStyle = 0;
     item.isEnable = YES;
 
-    __weak AWESettingItemModel *weakItem = item;
+    __weak DYYYSettingDescriptor *weakItem = item;
     item.cellTappedBlock = ^{
       if (![[NSFileManager defaultManager] fileExistsAtPath:dyyyFolderPath]) {
           [[NSFileManager defaultManager] createDirectoryAtPath:dyyyFolderPath withIntermediateDirectories:YES attributes:nil error:nil];
       }
 
-      UIViewController *topVC = topView();
+      UIViewController *topVC = [DYYYSettingsCoordinator presenter];
 
       UIImage *previewImage = nil;
-      if (fileExists) {
+      if ([[NSFileManager defaultManager] fileExistsAtPath:imagePath]) {
           previewImage = [UIImage imageWithContentsOfFile:imagePath];
       }
 
@@ -564,14 +657,16 @@ static void showIconOptionsDialog(NSString *title, UIImage *previewImage, NSStri
                 if (!error) {
                     weakItem.detail = @"默认";
                     [weakItem refreshCell];
+                    if ([saveFilename isEqual:@"qingping.gif"])
+                        [hideButton loadIcons];
                 }
             }
           },
           ^{
-            UIImagePickerController *picker = [[UIImagePickerController alloc] init];
-            picker.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
-            picker.allowsEditing = NO;
-            picker.mediaTypes = @[ @"public.image" ];
+            PHPickerConfiguration *configuration = [[PHPickerConfiguration alloc] init];
+            configuration.filter = PHPickerFilter.imagesFilter;
+            configuration.selectionLimit = 1;
+            PHPickerViewController *picker = [[PHPickerViewController alloc] initWithConfiguration:configuration];
 
             DYYYImagePickerDelegate *pickerDelegate = [[DYYYImagePickerDelegate alloc] init];
             pickerDelegate.completionBlock = ^(NSDictionary *info) {
@@ -616,6 +711,10 @@ static void showIconOptionsDialog(NSString *title, UIImage *previewImage, NSStri
                   if (writeSuccess) {
                       weakItem.detail = @"已设置";
                       [weakItem refreshCell];
+                      [FloatingSpeedButton reloadConfiguration];
+                      reloadClearButtonConfiguration();
+                      if ([saveFilename isEqual:@"qingping.gif"])
+                          [hideButton loadIcons];
                   } else {
                       [DYYYUtils showToast:@"保存图标失败"];
                   }
@@ -633,12 +732,12 @@ static void showIconOptionsDialog(NSString *title, UIImage *previewImage, NSStri
     return item;
 }
 
-+ (AWESettingSectionModel *)createSectionWithTitle:(NSString *)title items:(NSArray *)items {
++ (DYYYSettingsSection *)createSectionWithTitle:(NSString *)title items:(NSArray *)items {
     return [self createSectionWithTitle:title footerTitle:nil items:items];
 }
 
-+ (AWESettingSectionModel *)createSectionWithTitle:(NSString *)title footerTitle:(NSString *)footerTitle items:(NSArray *)items {
-    AWESettingSectionModel *section = [[NSClassFromString(@"AWESettingSectionModel") alloc] init];
++ (DYYYSettingsSection *)createSectionWithTitle:(NSString *)title footerTitle:(NSString *)footerTitle items:(NSArray *)items {
+    DYYYSettingsSection *section = [[DYYYSettingsSection.class alloc] init];
     section.sectionHeaderTitle = title;
     section.sectionHeaderHeight = 40;
     section.sectionFooterTitle = footerTitle;
@@ -648,30 +747,12 @@ static void showIconOptionsDialog(NSString *title, UIImage *previewImage, NSStri
     return section;
 }
 
-+ (AWESettingBaseViewController *)createSubSettingsViewController:(NSString *)title sections:(NSArray *)sectionsArray {
-    AWESettingBaseViewController *settingsVC = [[NSClassFromString(@"AWESettingBaseViewController") alloc] init];
-    dispatch_async(dispatch_get_main_queue(), ^{
-      if ([settingsVC.view isKindOfClass:[UIView class]]) {
-          Class navBarClass = NSClassFromString(@"AWENavigationBar");
-          for (UIView *subview in settingsVC.view.subviews) {
-              if (navBarClass && [subview isKindOfClass:navBarClass]) {
-                  id navigationBar = subview;
-                  if ([navigationBar respondsToSelector:@selector(titleLabel)]) {
-                      UILabel *label = [navigationBar valueForKey:@"titleLabel"];
-                      label.text = title;
-                  }
-                  break;
-              }
-          }
-      }
-    });
-
-    AWESettingsViewModel *viewModel = [[NSClassFromString(@"AWESettingsViewModel") alloc] init];
-    viewModel.colorStyle = 0;
-    viewModel.sectionDataArray = sectionsArray;
-    objc_setAssociatedObject(settingsVC, &kViewModelKey, viewModel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-    return settingsVC;
++ (DYYYSettingViewController *)createSubSettingsViewController:(NSString *)title sections:(NSArray *)sectionsArray {
+    if ([DYYYSettingsRegistry isBuilding]) {
+        [DYYYSettingsRegistry registerSections:sectionsArray category:title];
+        return nil;
+    }
+    return [[DYYYSettingViewController alloc] initWithSections:sectionsArray title:title];
 }
 
 + (UIViewController *)findViewController:(UIResponder *)responder {
@@ -684,22 +765,11 @@ static void showIconOptionsDialog(NSString *title, UIImage *previewImage, NSStri
     return nil;
 }
 
-+ (void)openSettingsWithViewController:(UIViewController *)vc {
-    BOOL hasAgreed = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYUserAgreementAccepted"];
-    showDYYYSettingsVC(vc, hasAgreed);
++ (void)openSettingsWithViewController:(UIViewController *)vc { /* 旧入口保留 ABI，不再导航。 */
 }
-
 + (void)openSettingsFromView:(UIView *)view {
-    UIViewController *currentVC = [self findViewController:view];
-    if ([currentVC isKindOfClass:NSClassFromString(@"AWELeftSideBarViewController")]) {
-        [self openSettingsWithViewController:currentVC];
-    }
 }
-
 + (void)addTapGestureToView:(UIView *)view target:(id)target {
-    view.userInteractionEnabled = YES;
-    UITapGestureRecognizer *tapGesture = [[UITapGestureRecognizer alloc] initWithTarget:target action:@selector(openDYYYSettings)];
-    [view addGestureRecognizer:tapGesture];
 }
 
 + (void)showUserAgreementAlert {
@@ -709,6 +779,7 @@ static void showIconOptionsDialog(NSString *title, UIImage *previewImage, NSStri
         onConfirm:^(NSString *text) {
           if ([text isEqualToString:@"我已阅读并同意继续使用"]) {
               [self setUserDefaults:@"YES" forKey:@"DYYYUserAgreementAccepted"];
+              [DYYYUtils showToast:@"协议已确认；首次启用后请重启应用以加载全部功能"];
           } else {
               [DYYYUtils showToast:@"请正确输入内容"];
               [self showUserAgreementAlert];
@@ -724,10 +795,34 @@ static void showIconOptionsDialog(NSString *title, UIImage *previewImage, NSStri
 
 @end
 
-
 #pragma mark - 图片选择代理
 
 @implementation DYYYImagePickerDelegate
+- (void)picker:(PHPickerViewController *)picker didFinishPicking:(NSArray<PHPickerResult *> *)results {
+    void (^completion)(NSDictionary *) = self.completionBlock;
+    [picker dismissViewControllerAnimated:YES
+                               completion:^{
+                                 NSItemProvider *provider = results.firstObject.itemProvider;
+                                 if (!provider || !completion)
+                                     return;
+                                 NSString *type = [provider hasItemConformingToTypeIdentifier:@"com.compuserve.gif"] ? @"com.compuserve.gif" : @"public.image";
+                                 [provider loadFileRepresentationForTypeIdentifier:type
+                                                                 completionHandler:^(NSURL *url, NSError *error) {
+                                                                   NSString *filename = [NSUUID.UUID.UUIDString stringByAppendingPathExtension:url.pathExtension.length ? url.pathExtension : @"image"];
+                                                                   NSURL *copy = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:filename]];
+                                                                   NSError *copyError;
+                                                                   if (!url || ![NSFileManager.defaultManager copyItemAtURL:url toURL:copy error:&copyError]) {
+                                                                       dispatch_async(dispatch_get_main_queue(), ^{
+                                                                         [DYYYUtils showToast:@"无法读取所选图标"];
+                                                                       });
+                                                                       return;
+                                                                   }
+                                                                   dispatch_async(dispatch_get_main_queue(), ^{
+                                                                     completion(@{UIImagePickerControllerImageURL : copy});
+                                                                   });
+                                                                 }];
+                               }];
+}
 - (void)imagePickerController:(UIImagePickerController *)picker didFinishPickingMediaWithInfo:(NSDictionary *)info {
     if (self.completionBlock) {
         self.completionBlock(info);
@@ -740,15 +835,18 @@ static void showIconOptionsDialog(NSString *title, UIImage *previewImage, NSStri
 }
 @end
 
-
 #pragma mark - 备份文件选择代理
 
 @implementation DYYYBackupPickerDelegate
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
-    if (urls.count > 0 && self.completionBlock) {
-        self.completionBlock(urls.firstObject);
-    }
-    [self cleanupTempFile];
+    void (^completion)(NSURL *) = self.completionBlock;
+    NSURL *url = urls.firstObject;
+    [controller dismissViewControllerAnimated:YES
+                                   completion:^{
+                                     if (url && completion)
+                                         completion(url);
+                                     [self cleanupTempFile];
+                                   }];
 }
 
 - (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {

@@ -26,6 +26,7 @@
 #import "DYYYFloatClearButton.h"
 #import "DYYYFloatSpeedButton.h"
 #import "DYYYSettingViewController.h"
+#import "DYYYSettingsCoordinator.h"
 #import "DYYYToast.h"
 #import "DYYYUtils.h"
 #import "DYYYVideoPlaybackGuard.h"
@@ -3302,77 +3303,15 @@ static void DYYYDisableAVPlayerItemHDRMetadata(AVPlayerItem *item) {
 %end
 
 %group DYYYSettingsGesture
-
 %hook UIWindow
-- (instancetype)initWithFrame:(CGRect)frame {
-    UIWindow *window = %orig(frame);
-    if (window) {
-        UILongPressGestureRecognizer *doubleFingerLongPressGesture = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleDoubleFingerLongPressGesture:)];
-        doubleFingerLongPressGesture.numberOfTouchesRequired = 2;
-        [window addGestureRecognizer:doubleFingerLongPressGesture];
-    }
-    return window;
-}
-
-%new
-- (void)handleDoubleFingerLongPressGesture:(UILongPressGestureRecognizer *)gesture {
-    if (gesture.state == UIGestureRecognizerStateBegan) {
-        UIViewController *rootViewController = self.rootViewController;
-        if (rootViewController) {
-            UIViewController *settingVC = [[DYYYSettingViewController alloc] init];
-
-            if (settingVC) {
-                BOOL isIPad = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad;
-                if (@available(iOS 15.0, *)) {
-                    if (!isIPad) {
-                        settingVC.modalPresentationStyle = UIModalPresentationPageSheet;
-                    } else {
-                        settingVC.modalPresentationStyle = UIModalPresentationFullScreen;
-                    }
-                } else {
-                    settingVC.modalPresentationStyle = UIModalPresentationFullScreen;
-                }
-
-                if (settingVC.modalPresentationStyle == UIModalPresentationFullScreen) {
-                    UIButton *closeButton = [UIButton buttonWithType:UIButtonTypeSystem];
-                    [closeButton setTitle:@"关闭" forState:UIControlStateNormal];
-                    closeButton.translatesAutoresizingMaskIntoConstraints = NO;
-
-                    [settingVC.view addSubview:closeButton];
-
-                    [NSLayoutConstraint activateConstraints:@[
-                        [closeButton.trailingAnchor constraintEqualToAnchor:settingVC.view.trailingAnchor constant:-10],
-                        [closeButton.topAnchor constraintEqualToAnchor:settingVC.view.topAnchor constant:40], [closeButton.widthAnchor constraintEqualToConstant:80],
-                        [closeButton.heightAnchor constraintEqualToConstant:40]
-                    ]];
-
-                    [closeButton addTarget:self action:@selector(closeSettings:) forControlEvents:UIControlEventTouchUpInside];
-                }
-
-                UIView *handleBar = [[UIView alloc] init];
-                handleBar.backgroundColor = [UIColor whiteColor];
-                handleBar.layer.cornerRadius = 2.5;
-                handleBar.translatesAutoresizingMaskIntoConstraints = NO;
-                [settingVC.view addSubview:handleBar];
-
-                [NSLayoutConstraint activateConstraints:@[
-                    [handleBar.centerXAnchor constraintEqualToAnchor:settingVC.view.centerXAnchor], [handleBar.topAnchor constraintEqualToAnchor:settingVC.view.topAnchor constant:8],
-                    [handleBar.widthAnchor constraintEqualToConstant:40], [handleBar.heightAnchor constraintEqualToConstant:5]
-                ]];
-
-                [rootViewController presentViewController:settingVC animated:YES completion:nil];
-            }
-        }
-    }
-}
-
-%new
-- (void)closeSettings:(UIButton *)button {
-    [button.superview.window.rootViewController dismissViewControllerAnimated:YES completion:nil];
+- (void)becomeKeyWindow {
+    %orig;
+    [[DYYYSettingsCoordinator shared] installGestureInWindow:self];
 }
 
 - (void)makeKeyAndVisible {
     %orig;
+    [[DYYYSettingsCoordinator shared] installGestureInWindow:self];
 
     if (!isFloatSpeedButtonEnabled)
         return;
@@ -3386,7 +3325,6 @@ static void DYYYDisableAVPlayerItemHDRMetadata(AVPlayerItem *item) {
     }
 }
 %end
-
 %end
 
 
@@ -16364,9 +16302,14 @@ gDYYYNotificationGlassGlassCarriers = [NSHashTable weakObjectsHashTable];
         }
     }
 
-    if (!DYYYGetBool(@"DYYYDisableSettingsGesture")) {
-        %init(DYYYSettingsGesture);
-    }
+    // 唯一日常入口始终可用；兼容保留旧禁用配置，不再让它锁死设置中心。
+    %init(DYYYSettingsGesture);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if (![scene isKindOfClass:UIWindowScene.class]) continue;
+            for (UIWindow *window in ((UIWindowScene *)scene).windows) [[DYYYSettingsCoordinator shared] installGestureInWindow:window];
+        }
+    });
     if (DYYYGetBool(@"DYYYUserAgreementAccepted")) {
         static dispatch_once_t onceToken;
         dispatch_once(&onceToken, ^{

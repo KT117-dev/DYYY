@@ -452,10 +452,26 @@ void reloadClearButtonConfiguration(void) {
     updateClearButtonVisibility();
 }
 @implementation HideUIButton
+
+- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
+    CGFloat dx = MAX(0, (44 - CGRectGetWidth(self.bounds)) / 2);
+    CGFloat dy = MAX(0, (44 - CGRectGetHeight(self.bounds)) / 2);
+    return CGRectContainsPoint(CGRectInset(self.bounds, -dx, -dy), point);
+}
+
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
         self.accessibilityLabel = @"DYYYClearScreenButton";
+        UIButtonConfiguration *nativeStyle = nil;
+        if (@available(iOS 26.0, *)) nativeStyle = [UIButtonConfiguration glassButtonConfiguration];
+        else if (@available(iOS 15.0, *)) nativeStyle = [UIButtonConfiguration tintedButtonConfiguration];
+        if (nativeStyle) {
+            nativeStyle.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+            nativeStyle.baseForegroundColor = UIColor.labelColor;
+            self.configuration = nativeStyle;
+        }
+
         self.backgroundColor = [UIColor clearColor];
         self.layer.cornerRadius = frame.size.width / 2;
         self.layer.masksToBounds = YES;
@@ -539,7 +555,7 @@ void reloadClearButtonConfiguration(void) {
                                                              if (!strongSelf) {
                                                                  return;
                                                              }
-                                                             [UIView animateWithDuration:0.3
+                                                             [UIView animateWithDuration:(UIAccessibilityIsReduceMotionEnabled() ? 0 : 0.3)
                                                                               animations:^{
                                                                                 strongSelf.alpha = 0.5;
                                                                               }];
@@ -547,7 +563,7 @@ void reloadClearButtonConfiguration(void) {
                                                            }];
     self.fadeTimer = fadeTimer;
     if (self.alpha != self.originalAlpha) {
-        [UIView animateWithDuration:0.2
+        [UIView animateWithDuration:(UIAccessibilityIsReduceMotionEnabled() ? 0 : 0.2)
                          animations:^{
                            self.alpha = self.originalAlpha;
                          }];
@@ -603,6 +619,9 @@ void reloadClearButtonConfiguration(void) {
 }
 
 - (void)loadIcons {
+    UIImageView *previous = objc_getAssociatedObject(self, @selector(loadIcons));
+    [previous stopAnimating]; [previous removeFromSuperview];
+    objc_setAssociatedObject(self, @selector(loadIcons), nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     NSString *documentsPath = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
     NSString *iconPath = [documentsPath stringByAppendingPathComponent:@"DYYY/qingping.gif"];
     NSData *gifData = [NSData dataWithContentsOfFile:iconPath];
@@ -616,11 +635,13 @@ void reloadClearButtonConfiguration(void) {
                                         totalDuration:&totalDuration];
 
     if (hasFrames && frames.count > 0) {
+        [self setImage:nil forState:UIControlStateNormal]; [self setImage:nil forState:UIControlStateSelected];
         UIImageView *animatedImageView = [[UIImageView alloc] initWithFrame:self.bounds];
         animatedImageView.animationImages = frames;
         animatedImageView.animationDuration = totalDuration;
         animatedImageView.animationRepeatCount = 0;
         [self addSubview:animatedImageView];
+        objc_setAssociatedObject(self, @selector(loadIcons), animatedImageView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
         animatedImageView.translatesAutoresizingMaskIntoConstraints = NO;
         [NSLayoutConstraint activateConstraints:@[
@@ -628,13 +649,17 @@ void reloadClearButtonConfiguration(void) {
             [animatedImageView.widthAnchor constraintEqualToAnchor:self.widthAnchor], [animatedImageView.heightAnchor constraintEqualToAnchor:self.heightAnchor]
         ]];
 
-        [animatedImageView startAnimating];
+        if (!UIAccessibilityIsReduceMotionEnabled()) [animatedImageView startAnimating];
+        else animatedImageView.image = frames.firstObject;
         return;
     }
 
-    [self setTitle:@"隐藏" forState:UIControlStateNormal];
-    [self setTitle:@"显示" forState:UIControlStateSelected];
-    self.titleLabel.font = [UIFont systemFontOfSize:10];
+    self.showIcon = [UIImage systemImageNamed:@"eye.slash"];
+    self.hideIcon = [UIImage systemImageNamed:@"eye"];
+    [self setImage:self.showIcon forState:UIControlStateNormal];
+    [self setImage:self.hideIcon forState:UIControlStateSelected];
+    self.tintColor = UIColor.labelColor;
+    self.accessibilityLabel = @"清屏或恢复界面";
 }
 
 - (void)handleTouchDown {
@@ -749,6 +774,7 @@ void reloadClearButtonConfiguration(void) {
     if (isAppInTransition)
         return;
 
+    [[[UISelectionFeedbackGenerator alloc] init] selectionChanged];
     BOOL selfHide = [self dyyy_shouldSelfHideOnClear];
     BOOL willEnterHidden = !self.isElementsHidden;
     // 仅在不会进入“按钮自隐藏”状态时才重置淡出动画

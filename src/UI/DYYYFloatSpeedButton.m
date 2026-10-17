@@ -295,6 +295,13 @@ void updateSpeedButtonVisibility() {
 
 @implementation FloatingSpeedButton
 
+- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
+    CGFloat dx = MAX(0, (44 - CGRectGetWidth(self.bounds)) / 2);
+    CGFloat dy = MAX(0, (44 - CGRectGetHeight(self.bounds)) / 2);
+    return CGRectContainsPoint(CGRectInset(self.bounds, -dx, -dy), point);
+}
+
+
 + (void)reloadConfiguration {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     isFloatSpeedButtonEnabled = [defaults boolForKey:@"DYYYEnableFloatSpeedButton"];
@@ -327,6 +334,15 @@ void updateSpeedButtonVisibility() {
     self = [super initWithFrame:frame];
     if (self) {
         self.accessibilityLabel = @"DYYYSpeedSwitchButton";
+        UIButtonConfiguration *nativeStyle = nil;
+        if (@available(iOS 26.0, *)) nativeStyle = [UIButtonConfiguration glassButtonConfiguration];
+        else if (@available(iOS 15.0, *)) nativeStyle = [UIButtonConfiguration tintedButtonConfiguration];
+        if (nativeStyle) {
+            nativeStyle.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+            nativeStyle.baseForegroundColor = UIColor.labelColor;
+            self.configuration = nativeStyle;
+        }
+
         self.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.1];
         self.layer.cornerRadius = frame.size.width / 2;
         self.layer.masksToBounds = YES;
@@ -334,7 +350,9 @@ void updateSpeedButtonVisibility() {
         self.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.2].CGColor;
 
         [self setTitleColor:[UIColor colorWithWhite:1.0 alpha:0.3] forState:UIControlStateNormal];
-        self.titleLabel.font = [UIFont boldSystemFontOfSize:15];
+        self.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCallout];
+        self.titleLabel.adjustsFontForContentSizeCategory = YES;
+        self.titleLabel.adjustsFontSizeToFitWidth = YES;
 
         self.layer.shadowColor = [UIColor blackColor].CGColor;
         self.layer.shadowOffset = CGSizeMake(0, 2);
@@ -399,13 +417,14 @@ void updateSpeedButtonVisibility() {
     }
 
     [self resetFadeTimer];
+    [[[UISelectionFeedbackGenerator alloc] init] selectionChanged];
 
-    [UIView animateWithDuration:0.08
+    [UIView animateWithDuration:(UIAccessibilityIsReduceMotionEnabled() ? 0 : 0.08)
         animations:^{
           self.transform = CGAffineTransformMakeScale(1.15, 1.15);
         }
         completion:^(BOOL finished) {
-          [UIView animateWithDuration:0.08
+          [UIView animateWithDuration:(UIAccessibilityIsReduceMotionEnabled() ? 0 : 0.08)
                            animations:^{
                              self.transform = CGAffineTransformIdentity;
                            }];
@@ -507,7 +526,7 @@ void updateSpeedButtonVisibility() {
                                                              if (!strongSelf) {
                                                                  return;
                                                              }
-                                                             [UIView animateWithDuration:0.3
+                                                             [UIView animateWithDuration:(UIAccessibilityIsReduceMotionEnabled() ? 0 : 0.3)
                                                                               animations:^{
                                                                                 strongSelf.alpha = 0.5;
                                                                               }];
@@ -516,7 +535,7 @@ void updateSpeedButtonVisibility() {
     self.fadeTimer = fadeTimer;
 
     if (self.alpha != self.originalAlpha) {
-        [UIView animateWithDuration:0.2
+        [UIView animateWithDuration:(UIAccessibilityIsReduceMotionEnabled() ? 0 : 0.2)
                          animations:^{
                            self.alpha = self.originalAlpha;
                          }];

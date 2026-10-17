@@ -1,5 +1,9 @@
 #import <Foundation/Foundation.h>
+#import <PhotosUI/PhotosUI.h>
 #import "AwemeHeaders.h"
+#import "DYYYSettingViewController.h"
+#import "DYYYSettingsCoordinator.h"
+#import "DYYYSettingsRegistry.h"
 
 @interface DYYYSettingsHelper : NSObject
 
@@ -16,6 +20,8 @@
  * @param key 设置键名
  */
 + (void)setUserDefaults:(id)object forKey:(NSString *)key;
++ (void)exportSettingsBackup;
++ (void)importSettingsBackup;
 
 /**
  * 显示自定义关于弹窗
@@ -61,7 +67,7 @@
  * 应用依赖规则到设置项
  * @param item 需要应用规则的设置项
  */
-+ (void)applyDependencyRulesForItem:(AWESettingItemModel *)item;
++ (void)applyDependencyRulesForItem:(DYYYSettingDescriptor *)item;
 
 /**
  * 处理设置项的冲突和依赖关系
@@ -89,7 +95,7 @@
  * @param dict 包含设置项配置的字典
  * @return 创建的设置项模型
  */
-+ (AWESettingItemModel *)createSettingItem:(NSDictionary *)dict;
++ (DYYYSettingDescriptor *)createSettingItem:(NSDictionary *)dict;
 
 /**
  * 创建设置项模型(含交互处理)
@@ -97,27 +103,27 @@
  * @param cellTapHandlers 单元格点击处理器字典
  * @return 创建的设置项模型
  */
-+ (AWESettingItemModel *)createSettingItem:(NSDictionary *)dict cellTapHandlers:(NSMutableDictionary *)cellTapHandlers;
++ (DYYYSettingDescriptor *)createSettingItem:(NSDictionary *)dict cellTapHandlers:(NSMutableDictionary *)cellTapHandlers;
 
 /**
  * 创建自定义图标设置项
  */
-+ (AWESettingItemModel *)createIconCustomizationItemWithIdentifier:(NSString *)identifier title:(NSString *)title svgIcon:(NSString *)svgIconName saveFile:(NSString *)saveFilename;
++ (DYYYSettingDescriptor *)createIconCustomizationItemWithIdentifier:(NSString *)identifier title:(NSString *)title svgIcon:(NSString *)svgIconName saveFile:(NSString *)saveFilename;
 
 /**
  * 创建设置分区
  */
-+ (AWESettingSectionModel *)createSectionWithTitle:(NSString *)title items:(NSArray *)items;
++ (DYYYSettingsSection *)createSectionWithTitle:(NSString *)title items:(NSArray *)items;
 
 /**
  * 创建设置分区，带 footer
  */
-+ (AWESettingSectionModel *)createSectionWithTitle:(NSString *)title footerTitle:(NSString *)footerTitle items:(NSArray *)items;
++ (DYYYSettingsSection *)createSectionWithTitle:(NSString *)title footerTitle:(NSString *)footerTitle items:(NSArray *)items;
 
 /**
  * 创建子设置页面控制器
  */
-+ (AWESettingBaseViewController *)createSubSettingsViewController:(NSString *)title sections:(NSArray *)sectionsArray;
++ (DYYYSettingViewController *)createSubSettingsViewController:(NSString *)title sections:(NSArray *)sectionsArray;
 
 /**
  * 查找视图所在控制器
@@ -146,13 +152,9 @@
 
 @end
 
-FOUNDATION_EXPORT void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed);
-
-
-@interface DYYYImagePickerDelegate : NSObject <UIImagePickerControllerDelegate, UINavigationControllerDelegate>
+@interface DYYYImagePickerDelegate : NSObject <UIImagePickerControllerDelegate, UINavigationControllerDelegate, PHPickerViewControllerDelegate>
 @property(nonatomic, copy) void (^completionBlock)(NSDictionary *info);
 @end
-
 
 @interface DYYYBackupPickerDelegate : NSObject <UIDocumentPickerDelegate>
 @property(nonatomic, copy) void (^completionBlock)(NSURL *url);

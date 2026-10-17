@@ -9,7 +9,10 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface DYYYSettingViewController : UIViewController
+@class DYYYSettingsSection;
+@interface DYYYSettingViewController : UITableViewController
+- (instancetype)initWithSections:(NSArray<DYYYSettingsSection *> *)sections title:(NSString *)title;
+- (instancetype)initWithTab:(NSString *)tab;
 
 @end
 

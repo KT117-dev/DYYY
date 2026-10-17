@@ -29,6 +29,7 @@
 - `Hooks/`：主 Hook、ABTest、长按面板；液体玻璃直接整合在 `DYYY.xm`。
 - `Core/`：下载业务、通用工具、观看保护。
 - `Settings/`：设置入口、设置页与辅助逻辑；Picker 代理合并在 `DYYYSettingsHelper`。
+- 原生设置中心由 `DYYYSettingsRegistry`、`DYYYSettingsCoordinator` 和 `DYYYSettingViewController` 组成；通过双指长按打开，不再注入抖音设置或侧边栏入口。
 - `UI/`：独立的弹窗、选择器、提示和浮动按钮。
 - `Support/`：抖音私有声明、常量、城市与安全计时器。
 
@@ -43,6 +44,8 @@
 ## 使用方式
 - 打开抖音后 **双指长按** 进入设置
 - 或在 **抖音设置** 中找到 DYYY 入口
+- 系统 Sheet 内通过总览、播放、外观、净化、工具五个 Tab 分类管理；所有设置可按名称、旧标题、分类和配置键搜索。
+- 原 `DYYYDisableSettingsGesture` / `DYYYEntrance` 配置会保留，但不会禁用唯一的双指长按入口。
 
 ## 贡献者
 
