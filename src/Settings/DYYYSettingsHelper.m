@@ -1,7 +1,6 @@
 #import "DYYYSettingsHelper.h"
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
-#import "DYYYImagePickerDelegate.h"
 #import "DYYYUtils.h"
 
 #import "DYYYAboutDialogView.h"
@@ -57,7 +56,6 @@
               @"DYYYEnableDanmuColor" : @[ @"DYYYDanmuColor" ],
               @"DYYYEnableArea" : @[ @"DYYYGeonamesUsername", @"DYYYLabelColor", @"DYYYEnableRandomGradient" ],
               @"DYYYShowScheduleDisplay" : @[ @"DYYYScheduleStyle", @"DYYYProgressLabelColor", @"DYYYTimelineVerticalPosition" ],
-              @"DYYYEnableNotificationTransparency" : @[ @"DYYYNotificationCornerRadius" ],
               @"DYYYEnableFloatSpeedButton" : @[ @"DYYYAutoRestoreSpeed", @"DYYYSpeedButtonShowX", @"DYYYSpeedButtonSize", @"DYYYSpeedSettings" ],
               @"DYYYEnableFloatClearButton" : @[
                   @"DYYYClearButtonIcon", @"DYYYEnableFloatClearButtonSize", @"DYYYRemoveTimeProgress", @"DYYYHideTimeProgress", @"DYYYHideDanmaku", @"DYYYHideSlider", @"DYYYHideTabBar",
@@ -70,7 +68,6 @@
           // ===== 条件依赖配置 =====
           // 一些设置项依赖于多个其他设置项的复杂条件
           @"conditionalDependencies" : @{
-              @"DYYYCommentBlurTransparent" : @{@"condition" : @"OR", @"settings" : @[ @"DYYYEnableCommentBlur", @"DYYYEnableNotificationTransparency" ]},
           },
 
           // ===== 冲突配置 =====
@@ -725,4 +722,46 @@ static void showIconOptionsDialog(NSString *title, UIImage *previewImage, NSStri
         }];
 }
 
+@end
+
+
+#pragma mark - 图片选择代理
+
+@implementation DYYYImagePickerDelegate
+- (void)imagePickerController:(UIImagePickerController *)picker didFinishPickingMediaWithInfo:(NSDictionary *)info {
+    if (self.completionBlock) {
+        self.completionBlock(info);
+    }
+    [picker dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)imagePickerControllerDidCancel:(UIImagePickerController *)picker {
+    [picker dismissViewControllerAnimated:YES completion:nil];
+}
+@end
+
+
+#pragma mark - 备份文件选择代理
+
+@implementation DYYYBackupPickerDelegate
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    if (urls.count > 0 && self.completionBlock) {
+        self.completionBlock(urls.firstObject);
+    }
+    [self cleanupTempFile];
+}
+
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
+    [self cleanupTempFile];
+}
+
+- (void)cleanupTempFile {
+    if (self.tempFilePath && [[NSFileManager defaultManager] fileExistsAtPath:self.tempFilePath]) {
+        NSError *error = nil;
+        [[NSFileManager defaultManager] removeItemAtPath:self.tempFilePath error:&error];
+        if (error) {
+            NSLog(@"[DYYY] \u6e05\u7406\u4e34\u65f6\u6587\u4ef6\u5931\u8d25: %@", error.localizedDescription);
+        }
+    }
+}
 @end

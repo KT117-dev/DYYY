@@ -9,33 +9,24 @@
 - **模型/数据**：`CityManager` 负责本地城市映射与 GeoNames 查询；GeoNames 结果缓存逻辑在 `DYYYUtils`；`DYYYConstants.h`、`DYYYSettingsHelper` 中定义的 Key 控制远程 ABTest、依赖关系与通知。
 - **AwemeHeaders**：项目依赖的抖音私有类、Category 声明、宏定义都集中在 `AwemeHeaders.h` 中，供整个 tweak 引入。
 
-## 类路径速查（按 UI/功能分组）
-- **入口 Hook / 控制器**
-  - `DYYY.xm`、`DYYYSettings.xm`：全局 Hook、设置页 Hook。
-  - `DYYYSettingViewController.(h/m)`：自定义设置主界面。
-  - `DYYYSettingsHelper.(h/m)`：设置项依赖、入口、协议弹窗。
-- **业务/下载**
-  - `DYYYManager.(h/m)`：下载、合成、任务管理、授权。
-  - `DYYYVideoPlaybackGuard.(h/m)`：当前未公开视频的临时观看保护、检查结果与缓存范围控制。
-  - `CityManager.(h/m)`：城市映射与 GeoNames 查询。
-  - `AWMSafeDispatchTimer.(h/m)`：安全延时定时器。
-- **通用工具/常量**
-  - `DYYYUtils.(h/m)`：窗口/颜色/路径等工具。
-  - `DYYYConstants.h`：Keys、URL、通知名。
-- **设置页复用 UI（按交互类型）**
-  - 列表/选择：`DYYYKeywordListView.(h/m)`、`DYYYOptionsSelectionView.(h/m)`、`DYYYFilterSettingsView.(h/m)`。
-  - 输入/图标配置：`DYYYCustomInputView.(h/m)`、`DYYYIconOptionsDialogView.(h/m)`、`DYYYImagePickerDelegate.(h/m)`、`DYYYBackupPickerDelegate.(h/m)`。
-  - 弹窗/提示：`DYYYBottomAlertView.(h/m)`、`DYYYConfirmCloseView.(h/m)`、`DYYYAboutDialogView.(h/m)`、`DYYYToast.(h/m)`。
-- **浮窗与快捷操作**
-  - 漂浮按钮：`DYYYFloatSpeedButton.(h/m)`、`DYYYFloatClearButton.(h/xm)`。
-  - 长按/面板：`DYYYLongPressPanel.xm`、`DYYYBottomAlertView.(h/m)`（复用提示）。
-- **辅助代理**
-  - `DYYYImagePickerDelegate.(h/m)`、`DYYYBackupPickerDelegate.(h/m)`：统一封装系统 Picker 逻辑。
-  - `DYYYCustomInputView.(h/m)`：文本输入。
-- **ABTest / 远程配置**
-  - `DYYYABTestHook.(h/xm)`：抖音 ABTest 注入。
+## 源码目录与归属
+- `src/Hooks/`：`DYYY.xm`（主 Hook 和三个液体玻璃效果）、`DYYYABTestHook.(h/xm)`、`DYYYLongPressPanel.xm`。
+- `src/Core/`：`DYYYManager.(h/m)`、`DYYYUtils.(h/m)`、`DYYYVideoPlaybackGuard.(h/m)`。
+- `src/Settings/`：`DYYYSettings.xm`、`DYYYSettingViewController.(h/m)`、`DYYYSettingsHelper.(h/m)`；图片和备份 Picker 代理合并在 SettingsHelper 中。
+- `src/UI/`：独立的弹窗、列表、选择器、Toast、浮动按钮，头文件与实现成对存放。
+- `src/Support/`：`AwemeHeaders.h`、`DYYYConstants.h`、`CityManager.(h/m)`、`AWMSafeDispatchTimer.(h/m)`。
+- Makefile 显式列出编译单元，通过 `DYYY_SOURCE_DIRS` 提供各模块头文件搜索路径。新增或移动源码时同步维护构建路径和 CI 的 `src/**` 规则。
 
-(按上述分组定位 `.h/.m/.xm` 文件，可快速找到对应 UI 或业务类。若新增类，请将文件放入同类路径并在这里补充。)
+## 液体玻璃
+- 实现直接合并在 `src/Hooks/DYYY.xm`，按底栏、评论区、通知栏分段，私有状态均有功能前缀。
+- 底栏固定通透材质，开关 `DYYYEnableTabBarLiquidGlass`；通知栏固定通透材质，沿用 `DYYYEnableNotificationTransparency`；评论区使用普通材质，沿用 `DYYYEnableCommentBlur`。
+- 触摸反馈视图声明在 `AwemeHeaders.h`、实现在 `DYYYUtils.m`，共用染色与文字工具仍属 `DYYYUtils`。
+- 效果需要 iOS 26，低版本保持原生样式；上游 MIT 版权声明并入仓库 LICENSE。
+
+## 视频全屏与评论态位置
+- DYKiller 的视频几何、视频表/HUD、详情行高、图文背景、全屏评论背景和进度条细垫层实现直接整合在 `src/Hooks/DYYY.xm`，共用工具在 `DYYYUtils`。
+- `DYYYEnableFullScreen` 沿用原开关；评论区玻璃开启时同步禁止视频/图文缩放平移，并关闭全屏评论内嵌画中画、衔接循环播放。
+- 不再叠加旧的 TTMetalView 中心上移、泛 UIView 撑高和按 referString 手动扣底栏高度。
 
 ## DYYYManager 与 DYYYUtils 职权边界（必须遵守）
 - **DYYYManager（业务编排层）**

@@ -8,6 +8,7 @@
 # 本地配置文件（可选）
 -include Makefile.local
 
+# 自动选取当前工具链可用的最新 iOS SDK。
 TARGET = iphone:clang:latest:14.0
 ARCHS = arm64 arm64e
 
@@ -30,18 +31,44 @@ ifeq ($(GITHUB_ACTIONS),true)
 endif
 
 export DEBUG = 0
+OPTFLAG = -O3
 INSTALL_TARGET_PROCESSES = Aweme
 
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = DYYY
 
-DYYY_FILES = DYYY.xm DYYYFloatClearButton.xm DYYYFloatSpeedButton.m DYYYSettings.xm DYYYABTestHook.xm DYYYLongPressPanel.xm DYYYSettingsHelper.m DYYYImagePickerDelegate.m DYYYBackupPickerDelegate.m DYYYSettingViewController.m DYYYBottomAlertView.m DYYYCustomInputView.m DYYYOptionsSelectionView.m DYYYIconOptionsDialogView.m DYYYAboutDialogView.m DYYYKeywordListView.m DYYYFilterSettingsView.m DYYYConfirmCloseView.m DYYYToast.m DYYYManager.m DYYYUtils.m DYYYVideoPlaybackGuard.m CityManager.m AWMSafeDispatchTimer.m
-DYYY_CFLAGS = -fobjc-arc -w
-DYYY_LDFLAGS = -weak_framework AVFAudio
+DYYY_SOURCE_DIRS = src/Hooks src/Core src/Settings src/UI src/Support
+DYYY_FILES = \
+    src/Hooks/DYYY.xm \
+    src/Hooks/DYYYABTestHook.xm \
+    src/Hooks/DYYYLongPressPanel.xm \
+    src/Core/DYYYManager.m \
+    src/Core/DYYYUtils.m \
+    src/Core/DYYYVideoPlaybackGuard.m \
+    src/Settings/DYYYSettingViewController.m \
+    src/Settings/DYYYSettings.xm \
+    src/Settings/DYYYSettingsHelper.m \
+    src/UI/DYYYAboutDialogView.m \
+    src/UI/DYYYBottomAlertView.m \
+    src/UI/DYYYConfirmCloseView.m \
+    src/UI/DYYYCustomInputView.m \
+    src/UI/DYYYFilterSettingsView.m \
+    src/UI/DYYYFloatClearButton.xm \
+    src/UI/DYYYFloatSpeedButton.m \
+    src/UI/DYYYIconOptionsDialogView.m \
+    src/UI/DYYYKeywordListView.m \
+    src/UI/DYYYOptionsSelectionView.m \
+    src/UI/DYYYToast.m \
+    src/Support/AWMSafeDispatchTimer.m \
+    src/Support/CityManager.m
+# 编译和链接同时启用完整 LTO，让优化器跨编译单元优化。
+DYYY_CFLAGS = -fobjc-arc -w -flto=full $(addprefix -I,$(DYYY_SOURCE_DIRS))
+DYYY_CCFLAGS = -std=gnu++26
+$(foreach source,$(filter %.c %.m,$(DYYY_FILES)),$(eval $(source)_CFLAGS += -std=gnu23))
+# 各架构保留独立 LTO 中间对象，供 Theos 生成调试符号。
+DYYY_LDFLAGS = -O3 -flto=full -Wl,-dead_strip -Wl,-object_path_lto,$(THEOS_OBJ_DIR)/DYYY.lto.o -weak_framework AVFAudio
 DYYY_FRAMEWORKS = CoreAudio
-CXXFLAGS += -std=c++11
-CCFLAGS += -std=c++11
 DYYY_LOGOS_DEFAULT_GENERATOR = internal
 
 export THEOS_STRICT_LOGOS=0

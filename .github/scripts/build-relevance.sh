@@ -13,7 +13,7 @@ is_direct_build_path() {
             ;;
     esac
 
-    if [[ "$path" != */* ]]; then
+    if [[ "$path" != */* || "$path" == src/* ]]; then
         case "$path" in
             *.h|*.m|*.mm|*.x|*.xm|*.c|*.cc|*.cpp|*.s|*.S)
                 return 0

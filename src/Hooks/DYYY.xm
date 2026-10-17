@@ -30,6 +30,21 @@
 #import "DYYYUtils.h"
 #import "DYYYVideoPlaybackGuard.h"
 
+static BOOL DYYYFullscreenVideoFullscreenOn(void);
+static BOOL DYYYFullscreenCommentFreezeOn(void);
+static CGRect DYYYFullscreenVideoContainerTargetFrame(UIView *view);
+static BOOL DYYYFullscreenRectsClose(CGRect lhs, CGRect rhs);
+static BOOL DYYYFullscreenCommentFullPanelOnScreen(void);
+static CGRect DYYYFullscreenFeedHUDAdjustFrame(UIView *view, CGRect frame);
+static void DYYYFullscreenHUDStatusBarCoverSync(UIViewController *interaction);
+static CGFloat DYYYFullscreenHUDStatusBarCoverHeight(UIView *hudView);
+static void DYYYFullscreenVideoFullscreenRegisterRestore(void (*restore)(void));
+static Class DYYYFullscreenVideoFeedTableClass(void);
+static UIView *DYYYFullscreenFeedTableForView(UIView *view);
+static NSNumber *DYYYFullscreenVideoFeedTableOriginalHeight(UIView *table);
+static BOOL DYYYFullscreenVideoFeedTablePrepareForController(UIViewController *controller, UITableView *table);
+static CGRect DYYYFullscreenAdjustFrame(UIView *view, CGRect frame);
+
 static CGFloat gStartY = 0.0;
 static CGFloat gStartVal = 0.0;
 static DYEdgeMode gMode = DYEdgeModeNone;
@@ -3374,26 +3389,6 @@ static void DYYYDisableAVPlayerItemHDRMetadata(AVPlayerItem *item) {
 
 %end
 
-%hook AWEBaseListViewController
-- (void)viewDidLayoutSubviews {
-    %orig;
-    [self applyBlurEffectIfNeeded];
-}
-
-%new
-- (void)applyBlurEffectIfNeeded {
-    if (DYYYGetBool(@"DYYYEnableCommentBlur") && [self isKindOfClass:NSClassFromString(@"AWECommentPanelContainerSwiftImpl.CommentContainerInnerViewController")]) {
-        // 动态获取用户设置的透明度
-        float userTransparency = [[[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYCommentBlurTransparent"] floatValue];
-        if (userTransparency <= 0 || userTransparency > 1) {
-            userTransparency = 0.9;
-        }
-
-        // 应用毛玻璃效果
-        [DYYYUtils applyBlurEffectToView:self.view transparency:userTransparency blurViewTag:999];
-    }
-}
-%end
 
 %hook AWEFeedVideoButton
 - (id)touchUpInsideBlock {
@@ -3428,27 +3423,6 @@ static void DYYYDisableAVPlayerItemHDRMetadata(AVPlayerItem *item) {
 - (void)layoutSubviews {
     %orig;
     DYYYApplyFloatClearProgressStateToView(self);
-
-    if (![[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYEnableFullScreen"]) {
-        return;
-    }
-
-    static char kDYProgressBgKey;
-    NSArray *bgViews = objc_getAssociatedObject(self, &kDYProgressBgKey);
-    if (!bgViews) {
-        NSMutableArray *tmp = [NSMutableArray array];
-        for (UIView *subview in self.subviews) {
-            if ([subview class] == [UIView class]) {
-                [tmp addObject:subview];
-            }
-        }
-        bgViews = [tmp copy];
-        objc_setAssociatedObject(self, &kDYProgressBgKey, bgViews, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-
-    for (UIView *v in bgViews) {
-        v.backgroundColor = [UIColor clearColor];
-    }
 }
 
 %end
@@ -4161,110 +4135,6 @@ static NSString *const kDYYYLongPressCopyEnabledKey = @"DYYYLongPressCopyTextEna
 
 - (id)badgeModule {
     return DYYYGetBool(@"DYYYNoUpdates") ? nil : %orig;
-}
-
-%end
-
-// 应用内推送毛玻璃效果
-%hook AWEInnerNotificationWindow
-
-- (void)layoutSubviews {
-    %orig;
-    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYEnableNotificationTransparency"]) {
-        [self setupBlurEffectForNotificationView];
-    }
-}
-
-- (void)didMoveToWindow {
-    %orig;
-    if (self.window && DYYYGetBool(@"DYYYEnableNotificationTransparency")) {
-        [self setupBlurEffectForNotificationView];
-    }
-}
-
-%new
-- (void)setupBlurEffectForNotificationView {
-    for (UIView *subview in self.subviews) {
-        if ([NSStringFromClass([subview class]) containsString:@"AWEInnerNotificationContainerView"]) {
-            [self applyBlurEffectToView:subview];
-            break;
-        }
-    }
-}
-
-%new
-- (void)applyBlurEffectToView:(UIView *)containerView {
-    dispatch_async(dispatch_get_main_queue(), ^{
-      if (!containerView) {
-          return;
-      }
-
-      containerView.backgroundColor = [UIColor clearColor];
-
-      float userRadius = [[[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYNotificationCornerRadius"] floatValue];
-      if (!userRadius || userRadius < 0 || userRadius > 50) {
-          userRadius = 12;
-      }
-
-      containerView.layer.cornerRadius = userRadius;
-      containerView.layer.masksToBounds = YES;
-
-      for (UIView *subview in containerView.subviews) {
-          if ([subview isKindOfClass:[UIVisualEffectView class]] && subview.tag == 999) {
-              [subview removeFromSuperview];
-          }
-      }
-
-      BOOL isDarkMode = [DYYYUtils isDarkMode];
-      UIBlurEffectStyle blurStyle = isDarkMode ? UIBlurEffectStyleDark : UIBlurEffectStyleLight;
-      UIBlurEffect *blurEffect = [UIBlurEffect effectWithStyle:blurStyle];
-      UIVisualEffectView *blurView = [[UIVisualEffectView alloc] initWithEffect:blurEffect];
-
-      blurView.frame = containerView.bounds;
-      blurView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-      blurView.tag = 999;
-      blurView.layer.cornerRadius = userRadius;
-      blurView.layer.masksToBounds = YES;
-
-      float userTransparency = [[[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYCommentBlurTransparent"] floatValue];
-      if (userTransparency <= 0 || userTransparency > 1) {
-          userTransparency = 0.5;
-      }
-
-      blurView.alpha = userTransparency;
-
-      [containerView insertSubview:blurView atIndex:0];
-
-      [self clearBackgroundRecursivelyInView:containerView];
-
-      [self setLabelsColorWhiteInView:containerView];
-    });
-}
-
-%new
-- (void)setLabelsColorWhiteInView:(UIView *)view {
-    for (UIView *subview in view.subviews) {
-        if ([subview isKindOfClass:[UILabel class]]) {
-            UILabel *label = (UILabel *)subview;
-            NSString *text = label.text;
-
-            if (![text isEqualToString:@"回复"] && ![text isEqualToString:@"查看"] && ![text isEqualToString:@"续火花"]) {
-                label.textColor = [UIColor whiteColor];
-            }
-        }
-        [self setLabelsColorWhiteInView:subview];
-    }
-}
-
-%new
-- (void)clearBackgroundRecursivelyInView:(UIView *)view {
-    for (UIView *subview in view.subviews) {
-        if ([subview isKindOfClass:[UIVisualEffectView class]] && subview.tag == 999 && [subview isKindOfClass:[UIButton class]]) {
-            continue;
-        }
-        subview.backgroundColor = [UIColor clearColor];
-        [self clearBackgroundRecursivelyInView:subview];
-    }
 }
 
 %end
@@ -6037,7 +5907,6 @@ static void DYYYApplyAvatarFollowPromptSettingsWithRetry(id owner) {
 %end
 
 
-
 // 隐藏消息页顶栏头像气泡
 %hook AFDSkylightCellBubble
 - (void)layoutSubviews {
@@ -7419,7 +7288,6 @@ static void DYYYLiveDurationInstallFromInnerFeedCell(id cell) {
 }
 
 %end
-
 
 
 // 隐藏直播发现
@@ -9175,7 +9043,6 @@ static NSHashTable *processedParentViews = nil;
 %end
 
 
-
 //以下部分为新增
 // 屏蔽头像直播
 %hook AWEUserModel
@@ -9537,17 +9404,6 @@ static NSHashTable *processedParentViews = nil;
 	return %orig;
 }
 %end
-
-
-
-
-
-
-
-
-
-
-
 
 
 %hook AWEFeedCommentConfigModel
@@ -11242,19 +11098,6 @@ static Class tabBarButtonClass = nil;
 }
 %end
 
-%hook AWEConcernCellLastView
-- (void)layoutSubviews {
-    %orig;
-
-    if (DYYYGetBool(@"DYYYEnableFullScreen") && gCurrentTabBarHeight > 0) {
-        for (UIView *subview in self.subviews) {
-            CGRect frame = subview.frame;
-            frame.origin.y -= gCurrentTabBarHeight;
-            subview.frame = frame;
-        }
-    }
-}
-%end
 
 %hook AWECommentInputBackgroundView
 - (void)layoutSubviews {
@@ -11305,93 +11148,8 @@ static Class tabBarButtonClass = nil;
     updateClearButtonVisibility();
 }
 
-- (void)viewDidLayoutSubviews {
-    %orig;
-
-    if (!DYYYGetBool(@"DYYYEnableCommentBlur"))
-        return;
-
-    Class containerViewClass = NSClassFromString(@"AWECommentInputViewSwiftImpl.CommentInputContainerView");
-    NSArray<UIView *> *containerViews = [DYYYUtils findAllSubviewsOfClass:containerViewClass inContainer:self.view];
-    for (UIView *containerView in containerViews) {
-        for (UIView *subview in containerView.subviews) {
-            if (subview.hidden == NO && subview.backgroundColor && CGColorGetAlpha(subview.backgroundColor.CGColor) == 1) {
-                float userTransparency = [[[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYCommentBlurTransparent"] floatValue];
-                if (userTransparency <= 0 || userTransparency > 1) {
-                    userTransparency = 0.8;
-                }
-                [DYYYUtils applyBlurEffectToView:subview transparency:userTransparency blurViewTag:999];
-            }
-        }
-    }
-
-    Class middleContainerClass = NSClassFromString(@"AWECommentInputViewSwiftImpl.CommentInputViewMiddleContainer");
-    NSArray<UIView *> *middleContainers = [DYYYUtils findAllSubviewsOfClass:middleContainerClass inContainer:self.view];
-    for (UIView *middleContainer in middleContainers) {
-        BOOL containsDanmu = NO;
-        for (UIView *innerSubviewCheck in middleContainer.subviews) {
-            if ([innerSubviewCheck isKindOfClass:[UILabel class]] && [((UILabel *)innerSubviewCheck).text containsString:@"弹幕"]) {
-                containsDanmu = YES;
-                break;
-            }
-        }
-
-        if (containsDanmu) {
-            UIView *parentView = middleContainer.superview;
-            for (UIView *innerSubview in parentView.subviews) {
-                if ([innerSubview isKindOfClass:[UIView class]]) {
-                    if (innerSubview.subviews.count > 0) {
-                        innerSubview.subviews[0].hidden = YES;
-                    }
-
-                    UIView *whiteBackgroundView = [[UIView alloc] initWithFrame:innerSubview.bounds];
-                    whiteBackgroundView.backgroundColor = [UIColor whiteColor];
-                    whiteBackgroundView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-                    [innerSubview addSubview:whiteBackgroundView];
-                    break;
-                }
-            }
-        } else {
-            for (UIView *subview in middleContainer.subviews) {
-                if (subview.hidden == NO && subview.backgroundColor && CGColorGetAlpha(subview.backgroundColor.CGColor) == 1) {
-                    [DYYYUtils applyBlurEffectToView:subview transparency:0.2f blurViewTag:999];
-                }
-            }
-        }
-    }
-}
-
 %end
 
-// 开启评论区毛玻璃后滚动区域填满底部
-%hook AWEListKitMagicCollectionView
-
-- (void)layoutSubviews {
-    %orig;
-
-    if (!DYYYGetBool(@"DYYYEnableCommentBlur")) {
-        return;
-    }
-
-    UICollectionView *collectionView = (UICollectionView *)self;
-
-    UIView *superview = collectionView.superview;
-    CGRect targetFrame = superview.bounds;
-    if (superview == nil || CGSizeEqualToSize(targetFrame.size, CGSizeZero) || CGRectEqualToRect(collectionView.frame, targetFrame)) {
-        return;
-    }
-
-    collectionView.frame = targetFrame;
-
-    CGFloat commentOffset = 166.0;
-
-    UIEdgeInsets inset = collectionView.contentInset;
-    inset.bottom = commentOffset;
-    collectionView.contentInset = inset;
-    collectionView.scrollIndicatorInsets = inset;
-}
-
-%end
 
 %hook UIView
 
@@ -11465,98 +11223,15 @@ static Class tabBarButtonClass = nil;
         return;
     }
 
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
-        UIViewController *vc = [DYYYUtils firstAvailableViewControllerFromView:self];
-        if ([vc isKindOfClass:%c(AWEAwemeDetailTableViewController)] ||
-            [vc isKindOfClass:%c(AWEAwemeDetailCellViewController)]) {
-            %orig([UIColor clearColor]);
-            return;
-        }
-    }
 
     %orig(backgroundColor);
 }
 
-- (void)layoutSubviews {
-    %orig;
-
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
-        if (self.frame.size.height == originalTabBarHeight && originalTabBarHeight > 0) {
-            UIViewController *vc = [DYYYUtils firstAvailableViewControllerFromView:self];
-            if ([vc isKindOfClass:NSClassFromString(@"AWEMixVideoPanelDetailTableViewController")] || [vc isKindOfClass:NSClassFromString(@"AWECommentInputViewController")] ||
-                [vc isKindOfClass:NSClassFromString(@"AWEAwemeDetailTableViewController")]) {
-                self.backgroundColor = [UIColor clearColor];
-            }
-        }
-    }
-
-    if (DYYYGetBool(@"DYYYEnableFullScreen") || DYYYGetBool(@"DYYYEnableCommentBlur")) {
-        UIViewController *vc = [DYYYUtils firstAvailableViewControllerFromView:self];
-        if ([vc isKindOfClass:%c(AWEPlayInteractionViewController)]) {
-            for (UIView *subview in self.subviews) {
-                if ([subview isKindOfClass:[UIView class]] && subview.backgroundColor && CGColorEqualToColor(subview.backgroundColor.CGColor, [UIColor blackColor].CGColor)) {
-                    subview.hidden = YES;
-                }
-            }
-        }
-    }
-}
 
 - (void)setFrame:(CGRect)frame {
-    if (![NSThread isMainThread]) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-          [self setFrame:frame];
-        });
-        return;
-    }
-
-    BOOL enableBlur = DYYYGetBool(@"DYYYEnableCommentBlur");
-    BOOL enableFS = DYYYGetBool(@"DYYYEnableFullScreen");
-
-    UIViewController *vc = [DYYYUtils firstAvailableViewControllerFromView:self];
-    Class DetailVCClass = NSClassFromString(@"AWEMixVideoPanelDetailTableViewController");
-    Class PlayVCClass1 = NSClassFromString(@"AWEAwemePlayVideoViewController");
-    Class PlayVCClass2 = NSClassFromString(@"AWEDPlayerFeedPlayerViewController");
-    Class PlayVCClass3 = NSClassFromString(@"AWEDPlayerViewController_Merge");
-
-    BOOL isDetailVC = (DetailVCClass && [vc isKindOfClass:DetailVCClass]);
-    BOOL isPlayVC = ((PlayVCClass1 && [vc isKindOfClass:PlayVCClass1]) ||
-                     (PlayVCClass2 && [vc isKindOfClass:PlayVCClass2]) ||
-                     (PlayVCClass3 && [vc isKindOfClass:PlayVCClass3]));
-
-    if (isPlayVC && enableBlur) {
-        if (frame.origin.x != 0) {
-            return;
-        }
-    }
-
-    if (isPlayVC && enableFS) {
-        // 详情页没有首页底栏；在原生设置播放器容器尺寸时就对齐一屏，
-        // 让后续视频比例计算使用正确的 bounds，避免布局结束后再补高度。
-        if (self.superview && CGAffineTransformIsIdentity(self.transform) &&
-            [vc respondsToSelector:@selector(contentView)] &&
-            self == ((AWEAwemePlayVideoViewController *)vc).contentView &&
-            [DYYYUtils isAwemeDetailVideoController:vc]) {
-            frame = [DYYYUtils fullHeightFrame:frame inContainerBounds:self.superview.bounds];
-            %orig(frame);
-            return;
-        }
-        if (frame.origin.x != 0 && frame.origin.y != 0) {
-            %orig(frame);
-            return;
-        }
-        CGRect superF = self.superview.frame;
-        if (CGRectGetHeight(superF) > 0 && CGRectGetHeight(frame) > 0 && CGRectGetHeight(frame) < CGRectGetHeight(superF)) {
-            CGFloat diff = CGRectGetHeight(superF) - CGRectGetHeight(frame);
-            if (fabs(diff - gCurrentTabBarHeight) < 1.0) {
-                frame.size.height = CGRectGetHeight(superF);
-            }
-        }
-
-        %orig(frame);
-        return;
-    }
-    %orig(frame);
+    CGRect adjusted = DYYYFullscreenAdjustFrame(self, frame);
+    if (CGRectIsNull(adjusted)) { %orig; return; }
+    %orig(adjusted);
 }
 
 %new
@@ -11569,15 +11244,7 @@ static Class tabBarButtonClass = nil;
         return;
     }
 
-    CGFloat upwardOffset = 0;
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
-        UIWindow *window = self.window ?: [DYYYUtils getActiveWindow];
-        CGFloat originalHeight = originalTabBarHeight > 0 ? originalTabBarHeight : 49.0 + window.safeAreaInsets.bottom;
-        CGFloat tabBarHeight = gCurrentTabBarHeight > 0 ? gCurrentTabBarHeight : originalHeight;
-        upwardOffset = (window && window.safeAreaInsets.bottom == 0)
-            ? MAX(0.0, tabBarHeight - originalHeight) : tabBarHeight;
-    }
-    [DYYYUtils applyLivePreStreamLayoutToStackView:self upwardOffset:upwardOffset];
+    [DYYYUtils applyLivePreStreamLayoutToStackView:self upwardOffset:0];
 }
 
 %new
@@ -11665,93 +11332,6 @@ static Class tabBarButtonClass = nil;
         updateClearButtonVisibility();
     }
 
-    UIWindow *keyWindow = [DYYYUtils getActiveWindow];
-    if (keyWindow && keyWindow.safeAreaInsets.bottom == 0) {
-        return;
-    }
-
-    if (!DYYYGetBool(@"DYYYEnableFullScreen")) {
-        return;
-    }
-
-    UIViewController *directParentVC = self.parentViewController;
-    UIViewController *parentVC = directParentVC;
-    int maxIterations = 3;
-    int count = 0;
-
-    while (parentVC && count < maxIterations) {
-        if ([parentVC isKindOfClass:%c(AFDPlayRemoteFeedTableViewController)]) {
-            return;
-        }
-        parentVC = parentVC.parentViewController;
-        count++;
-    }
-
-    if (!self.view.superview) {
-        return;
-    }
-
-    CGRect frame = self.view.frame;
-    CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
-    CGFloat superviewHeight = self.view.superview.bounds.size.height;
-
-    if (frame.size.width != screenWidth && frame.size.height < superviewHeight) {
-        return;
-    }
-
-    NSString *currentReferString = self.referString;
-
-    BOOL isDetailVideo = [DYYYUtils isAwemeDetailVideoController:self];
-    BOOL useFullHeight = [currentReferString isEqualToString:@"general_search"] || [currentReferString isEqualToString:@"search_result"] || [currentReferString isEqualToString:@"search_ecommerce"] ||
-                         [currentReferString isEqualToString:@"close_friends_moment"] || [currentReferString isEqualToString:@"offline_mode"] || [currentReferString isEqualToString:@"challenge"] ||
-                         [currentReferString isEqualToString:@"general_search_scan"] || currentReferString == nil;
-
-    if (!useFullHeight && [currentReferString isEqualToString:@"co_play_watch"]) {
-        Class richContentVCClass = NSClassFromString(@"AWEFriendsImpl.RichContentNewListViewController");
-        if (richContentVCClass && [directParentVC isKindOfClass:richContentVCClass]) {
-            useFullHeight = YES;
-        }
-    }
-
-    if (!useFullHeight && [currentReferString isEqualToString:@"chat"]) {
-        NSString *currentVersion = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
-        if (currentVersion.length == 0) {
-            Class managerClass = %c(AWEVersionUpdateManager);
-            if (managerClass && [managerClass respondsToSelector:@selector(sharedInstance)]) {
-                AWEVersionUpdateManager *manager = [managerClass sharedInstance];
-                if ([manager respondsToSelector:@selector(currentVersion)]) {
-                    currentVersion = manager.currentVersion;
-                }
-            }
-        }
-
-        // 39.2.0 及更早版本的私信播放页以完整高度布局信息区，否则底部约束会整体上移。 （靠版本号判断不靠谱，这个是 abtest 的）
-        if (currentVersion.length > 0 && [DYYYUtils compareVersion:currentVersion toVersion:@"39.2.0"] != NSOrderedDescending) {
-            useFullHeight = YES;
-        }
-    }
-
-    if (isDetailVideo) {
-        // 视频容器仍铺满整屏，信息层单独保留一份底部操作区高度，避免文案贴底。
-        // 原生详情列表已取消底部预留，这里只扣一次；referString 尚未赋值时也适用。
-        CGFloat bottomHeight = gCurrentTabBarHeight;
-        if (!isfinite(bottomHeight) || bottomHeight <= 0) {
-            bottomHeight = originalTabBarHeight;
-        }
-        if (!isfinite(bottomHeight) || bottomHeight <= 0) {
-            UIWindow *window = self.view.window ?: keyWindow;
-            bottomHeight = 49.0 + window.safeAreaInsets.bottom;
-        }
-        frame.size.height = MAX(1.0, superviewHeight - bottomHeight);
-    } else if (useFullHeight) {
-        frame.size.height = superviewHeight;
-    } else {
-        frame.size.height = superviewHeight - gCurrentTabBarHeight;
-    }
-
-    if (fabs(frame.size.height - self.view.frame.size.height) > 0.5) {
-        self.view.frame = frame;
-    }
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
@@ -11867,27 +11447,6 @@ static Class tabBarButtonClass = nil;
     return %orig;
 }
 
-- (void)viewDidLayoutSubviews {
-    %orig;
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
-        UIView *contentView = self.contentView;
-        if (contentView && contentView.superview) {
-            CGRect frame = contentView.frame;
-            CGFloat parentHeight = contentView.superview.bounds.size.height;
-
-            if ([DYYYUtils isAwemeDetailVideoController:self] && CGAffineTransformIsIdentity(contentView.transform)) {
-                frame = [DYYYUtils fullHeightFrame:frame inContainerBounds:contentView.superview.bounds];
-            } else if (frame.size.height == parentHeight - gCurrentTabBarHeight) {
-                frame.size.height = parentHeight;
-            } else if (frame.size.height == parentHeight - (gCurrentTabBarHeight * 2)) {
-                frame.size.height = parentHeight - gCurrentTabBarHeight;
-            }
-            if (fabs(frame.size.height - contentView.frame.size.height) > 0.5) {
-                contentView.frame = frame;
-            }
-        }
-    }
-}
 
 - (void)setIsAutoPlay:(BOOL)arg0 {
     %orig(arg0);
@@ -11919,27 +11478,6 @@ static Class tabBarButtonClass = nil;
     return %orig;
 }
 
-- (void)viewDidLayoutSubviews {
-    %orig;
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
-        UIView *contentView = self.contentView;
-        if (contentView && contentView.superview) {
-            CGRect frame = contentView.frame;
-            CGFloat parentHeight = contentView.superview.bounds.size.height;
-
-            if ([DYYYUtils isAwemeDetailVideoController:self] && CGAffineTransformIsIdentity(contentView.transform)) {
-                frame = [DYYYUtils fullHeightFrame:frame inContainerBounds:contentView.superview.bounds];
-            } else if (frame.size.height == parentHeight - gCurrentTabBarHeight) {
-                frame.size.height = parentHeight;
-            } else if (frame.size.height == parentHeight - (gCurrentTabBarHeight * 2)) {
-                frame.size.height = parentHeight - gCurrentTabBarHeight;
-            }
-            if (fabs(frame.size.height - contentView.frame.size.height) > 0.5) {
-                contentView.frame = frame;
-            }
-        }
-    }
-}
 
 - (void)setIsAutoPlay:(BOOL)arg0 {
     %orig(arg0);
@@ -11965,19 +11503,13 @@ static Class tabBarButtonClass = nil;
 %hook AWEFeedTableView
 - (void)layoutSubviews {
     %orig;
-
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
-        CGRect frame = self.frame;
-        frame.size.height = self.superview.frame.size.height;
-        self.frame = frame;
-    } else if (gCurrentTabBarHeight > 0) {
-        UIWindow *keyWindow = [DYYYUtils getActiveWindow];
-        if (keyWindow && keyWindow.safeAreaInsets.bottom == 0) {
-            return;
-        }
-
-        CGRect frame = self.frame;
-        frame.size.height = self.superview.frame.size.height - gCurrentTabBarHeight;
+    if (DYYYGetBool(@"DYYYEnableFullScreen") || gCurrentTabBarHeight <= 0) return;
+    UIWindow *window = [DYYYUtils getActiveWindow];
+    if (!self.superview || (window && window.safeAreaInsets.bottom == 0)) return;
+    CGRect frame = self.frame;
+    CGFloat height = self.superview.bounds.size.height - gCurrentTabBarHeight;
+    if (height > 0 && fabs(frame.size.height - height) > 0.5) {
+        frame.size.height = height;
         self.frame = frame;
     }
 }
@@ -12502,98 +12034,6 @@ static void DYYYRemoveKeyboardObserver(void) {
 
 %end
 
-%hook AWEStoryContainerCollectionView
-- (void)layoutSubviews {
-    %orig;
-    if ([self.subviews count] == 2)
-        return;
-
-    // 获取 enableEnterProfile 属性来判断是否是主页
-    id enableEnterProfile = [self valueForKey:@"enableEnterProfile"];
-    BOOL isHome = (enableEnterProfile != nil && [enableEnterProfile boolValue]);
-
-    // 检查是否在作者主页
-    BOOL isAuthorProfile = NO;
-    UIResponder *responder = self;
-    while ((responder = [responder nextResponder])) {
-        if ([NSStringFromClass([responder class]) containsString:@"UserHomeViewController"] || [NSStringFromClass([responder class]) containsString:@"ProfileViewController"]) {
-            isAuthorProfile = YES;
-            break;
-        }
-    }
-
-    // 如果不是主页也不是作者主页，直接返回
-    if (!isHome && !isAuthorProfile)
-        return;
-
-    for (UIView *subview in self.subviews) {
-        if ([subview isKindOfClass:[UIView class]]) {
-            UIView *nextResponder = (UIView *)subview.nextResponder;
-
-            // 处理主页的情况
-            if (isHome && [nextResponder isKindOfClass:%c(AWEPlayInteractionViewController)]) {
-                UIViewController *awemeBaseViewController = [nextResponder valueForKey:@"awemeBaseViewController"];
-                if (![awemeBaseViewController isKindOfClass:%c(AWEFeedCellViewController)]) {
-                    continue;
-                }
-
-                CGRect frame = subview.frame;
-                if (DYYYGetBool(@"DYYYEnableFullScreen")) {
-                    frame.size.height = subview.superview.frame.size.height - gCurrentTabBarHeight;
-                    subview.frame = frame;
-                }
-            }
-            // 处理作者主页的情况
-            else if (isAuthorProfile) {
-                // 检查是否是作品图片
-                BOOL isWorkImage = NO;
-
-                // 可以通过检查子视图、标签或其他特性来确定是否是作品图片
-                for (UIView *childView in subview.subviews) {
-                    if ([NSStringFromClass([childView class]) containsString:@"ImageView"] || [NSStringFromClass([childView class]) containsString:@"ThumbnailView"]) {
-                        isWorkImage = YES;
-                        break;
-                    }
-                }
-
-                if (isWorkImage) {
-                    // 修复作者主页作品图片上移问题
-                    CGRect frame = subview.frame;
-                    frame.origin.y += gCurrentTabBarHeight;
-                    subview.frame = frame;
-                }
-            }
-        }
-    }
-}
-%end
-
-%hook AFDFastSpeedView
-- (void)layoutSubviews {
-    %orig;
-
-    if (![[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYEnableFullScreen"]) {
-        return;
-    }
-
-    static char kDYFastSpeedBgKey;
-    NSArray *bgViews = objc_getAssociatedObject(self, &kDYFastSpeedBgKey);
-    if (!bgViews) {
-        NSMutableArray *tmp = [NSMutableArray array];
-        for (UIView *subview in self.subviews) {
-            if ([subview class] == [UIView class]) {
-                [tmp addObject:subview];
-            }
-        }
-        bgViews = [tmp copy];
-        objc_setAssociatedObject(self, &kDYFastSpeedBgKey, bgViews, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-
-    for (UIView *view in bgViews) {
-        view.backgroundColor = [UIColor clearColor];
-    }
-}
-%end
 
 %hook TTPlayerView
 
@@ -12607,109 +12047,10 @@ static void DYYYRemoveKeyboardObserver(void) {
 
 %end
 
-%hook TTMetalView
-- (void)setCenter:(CGPoint)center {
-    BOOL shouldAdjust = NO;
-    UIView *view = (UIView *)self;
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
-        CGFloat viewWidth = CGRectGetWidth(view.bounds);
-        CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
-        if (viewWidth + 0.5f >= screenWidth) {
-            UIViewController *vc = [DYYYUtils firstAvailableViewControllerFromView:view];
-            Class playClass = %c(AWEPlayVideoViewController);
-            // 详情页已经按全高布局，不能再叠加首页底栏对应的向上偏移。
-            if (playClass && [vc isKindOfClass:playClass] && ![DYYYUtils isAwemeDetailVideoController:vc]) {
-                AWEPlayVideoViewController *playVC = (AWEPlayVideoViewController *)vc;
-                AWEAwemeModel *model = playVC.model;
-                if ([model respondsToSelector:@selector(isShowLandscapeEntryView)] && model.isShowLandscapeEntryView) {
-                    shouldAdjust = YES;
-                }
-            }
-        }
-    }
-
-    if (shouldAdjust) {
-        CGFloat offset = gCurrentTabBarHeight > 0 ? gCurrentTabBarHeight : originalTabBarHeight;
-        if (offset > 0) {
-            center.y -= offset * 0.5;
-        }
-    }
-
-    %orig(center);
-}
-%end
-
-%hook TTMetalViewNew
-- (void)setCenter:(CGPoint)center {
-    BOOL shouldAdjust = NO;
-    UIView *view = (UIView *)self;
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
-        CGFloat viewWidth = CGRectGetWidth(view.bounds);
-        CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
-        if (viewWidth + 0.5f >= screenWidth) {
-            UIViewController *vc = [DYYYUtils firstAvailableViewControllerFromView:view];
-            Class playClass = %c(AWEPlayVideoViewController);
-            if (playClass && [vc isKindOfClass:playClass] && ![DYYYUtils isAwemeDetailVideoController:vc]) {
-                AWEPlayVideoViewController *playVC = (AWEPlayVideoViewController *)vc;
-                AWEAwemeModel *model = playVC.model;
-                if ([model respondsToSelector:@selector(isShowLandscapeEntryView)] && model.isShowLandscapeEntryView) {
-                    shouldAdjust = YES;
-                }
-            }
-        }
-    }
-
-    if (shouldAdjust) {
-        CGFloat offset = gCurrentTabBarHeight > 0 ? gCurrentTabBarHeight : originalTabBarHeight;
-        if (offset > 0) {
-            center.y -= offset * 0.5;
-        }
-    }
-
-    %orig(center);
-}
-%end
-
-%hook TTMetalViewVP
-- (void)setCenter:(CGPoint)center {
-    BOOL shouldAdjust = NO;
-    UIView *view = (UIView *)self;
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
-        CGFloat viewWidth = CGRectGetWidth(view.bounds);
-        CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
-        if (viewWidth + 0.5f >= screenWidth) {
-            UIViewController *vc = [DYYYUtils firstAvailableViewControllerFromView:view];
-            Class playClass = %c(AWEPlayVideoViewController);
-            if (playClass && [vc isKindOfClass:playClass] && ![DYYYUtils isAwemeDetailVideoController:vc]) {
-                AWEPlayVideoViewController *playVC = (AWEPlayVideoViewController *)vc;
-                AWEAwemeModel *model = playVC.model;
-                if ([model respondsToSelector:@selector(isShowLandscapeEntryView)] && model.isShowLandscapeEntryView) {
-                    shouldAdjust = YES;
-                }
-            }
-        }
-    }
-
-    if (shouldAdjust) {
-        CGFloat offset = gCurrentTabBarHeight > 0 ? gCurrentTabBarHeight : originalTabBarHeight;
-        if (offset > 0) {
-            center.y -= offset * 0.5;
-        }
-    }
-
-    %orig(center);
-}
-%end
 
 // 隐藏图片滑条
 %hook AWEStoryProgressContainerView
-- (void)setCenter:(CGPoint)center {
-    UIViewController *vc = [DYYYUtils firstAvailableViewControllerFromView:self];
-    if ([vc isKindOfClass:NSClassFromString(@"AWEFeedPlayControlImpl.PureModePageCellViewController")] && DYYYGetBool(@"DYYYEnableFullScreen")) {
-        center.y -= gCurrentTabBarHeight;
-    }
-    %orig(center);
-}
+
 
 - (BOOL)isHidden {
     BOOL originalValue = %orig;
@@ -12785,62 +12126,6 @@ static void DYYYRemoveKeyboardObserver(void) {
 
 %end
 
-%group DYYYDetailFullscreenGroup
-%hook AWEAwemeDetailTableViewController
-
-- (BOOL)p_enableFullScreenSlide {
-    // 40.7 的原生列表约束和底部 margin 都读取此标志，统一取消详情页底部预留。
-    if (DYYYGetBool(@"DYYYEnableFullScreen") && [DYYYUtils isAwemeDetailVideoController:self]) {
-        return YES;
-    }
-    return %orig;
-}
-
-%end
-%end
-
-%hook AWEAwemeDetailTableView
-
-- (void)setFrame:(CGRect)frame {
-    if (DYYYGetBool(@"DYYYEnableFullScreen") && [NSThread isMainThread] &&
-        CGAffineTransformIsIdentity(self.transform)) {
-        UIView *container = self.superview;
-        // 列表视口只能占父容器的一屏，不能按屏幕高度向上取整成两屏。
-        // 原生行高和滑动落点都会读取这里的高度，略超一屏也必须保持一致。
-        if (container) {
-            frame = [DYYYUtils fullHeightFrame:frame inContainerBounds:container.bounds];
-        }
-    }
-    %orig(frame);
-}
-
-%end
-
-%hook AWEMixVideoPanelMoreView
-
-- (void)setFrame:(CGRect)frame {
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
-        CGFloat targetY = frame.origin.y - gCurrentTabBarHeight;
-        CGFloat screenHeightMinusGDiff = [UIScreen mainScreen].bounds.size.height - gCurrentTabBarHeight;
-
-        CGFloat tolerance = 10.0;
-
-        if (fabs(targetY - screenHeightMinusGDiff) <= tolerance) {
-            frame.origin.y = targetY;
-        }
-    }
-    %orig(frame);
-}
-
-- (void)layoutSubviews {
-    %orig;
-
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
-        self.backgroundColor = [UIColor clearColor];
-    }
-}
-
-%end
 
 %hook CommentInputContainerView
 
@@ -12875,28 +12160,7 @@ static void DYYYRemoveKeyboardObserver(void) {
 %end
 
 // 聊天视频底部评论框背景透明
-%hook AWEIMFeedBottomQuickEmojiInputBar
 
-- (void)layoutSubviews {
-    %orig;
-
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
-        UIView *parentView = self.superview;
-        while (parentView) {
-            if ([NSStringFromClass([parentView class]) isEqualToString:@"UIView"]) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                  parentView.backgroundColor = [UIColor clearColor];
-                  parentView.layer.backgroundColor = [UIColor clearColor].CGColor;
-                  parentView.opaque = NO;
-                });
-                break;
-            }
-            parentView = parentView.superview;
-        }
-    }
-}
-
-%end
 
 // 隐藏上次看到
 %hook DUXPopover
@@ -13101,18 +12365,6 @@ static NSString *const kHideRecentUsersKey = @"DYYYHideSidebarRecentUsers";
 
 // %end
 
-%hook AFDViewedBottomView
-- (void)layoutSubviews {
-    %orig;
-
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
-
-        self.backgroundColor = [UIColor clearColor];
-
-        self.effectView.hidden = YES;
-    }
-}
-%end
 
 // 极速版红包激励挂件容器视图类组（移除逻辑）
 %group IncentivePendantGroup
@@ -13126,56 +12378,11 @@ static NSString *const kHideRecentUsersKey = @"DYYYHideSidebarRecentUsers";
 %end
 %end
 
-// View scaling fix when comment blur is enabled
-%group BDMultiContentImageViewGroup
-%hook BDMultiContentContainer_ImageContentView
-
-- (void)setTransform:(CGAffineTransform)transform {
-    if (DYYYGetBool(@"DYYYEnableCommentBlur")) {
-        return;
-    }
-    %orig(transform);
-}
-
-%end
-%end
-
-%hook AWEStoryContainerCollectionView
-
-- (void)setFrame:(CGRect)frame {
-    if (DYYYGetBool(@"DYYYEnableCommentBlur")) {
-        if (frame.origin.y != 0) {
-            return;
-        }
-    }
-    %orig(frame);
-}
-
-%end
-
 %hook AWEDPlayerProgressContainerView
 
 - (void)layoutSubviews {
     %orig;
     DYYYApplyFloatClearProgressStateToView(self);
-
-    if (![[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYEnableFullScreen"]) {
-        return;
-    }
-
-    for (UIView *subview in self.subviews) {
-        if ([subview isMemberOfClass:[UIView class]]) {
-            UIColor *bgColor = subview.backgroundColor;
-            if (bgColor) {
-                CGFloat h, s, v, a;
-                if ([bgColor getHue:&h saturation:&s brightness:&v alpha:&a]) {
-                    if (v < 0.2) {
-                        subview.backgroundColor = [UIColor clearColor];
-                    }
-                }
-            }
-        }
-    }
 }
 
 %end
@@ -13216,7 +12423,3890 @@ static void findTargetViewInView(UIView *view) {
     }
 }
 
+// 液体玻璃实现移植自 DYKiller，MIT 许可见仓库 LICENSE。
+
+#pragma mark - 底栏液体玻璃（通透）
+
+// 移植自 DYKiller，MIT 许可见 LICENSE。
+
+// 依赖的抖音/UIKit 私有符号集中在此，抖音改名时只改这里。
+static NSString *const kDYYYTabGlassBadgeContainerClass = @"AWENormalModeTabBarBadgeContainerView";
+static NSString *const kDYYYTabGlassBadgeClass = @"DUXBadge";
+static NSString *const kDYYYTabGlassPlatterClass = @"_UITabBarItemPlatterView";
+static NSString *const kDYYYTabGlassTabButtonClass = @"_UITabButton";
+static NSString *const kDYYYTabGlassPlusClickSelector = @"plusTabBarButtonDidClick:";
+static NSString *const kDYYYTabGlassTabClickSelector = @"tabBarButtonDidTouchUpInside:gestureRecognizer:";
+
+// 抖音按钮的 type：拍摄入口。它不是页面，不参与 selectedIndex，单独做成右侧圆键。
+static const long long kDYYYTabGlassPlusButtonType = 2;
+// 标题字号。抖音原生底栏是 10pt——那是留给「图标在上、10pt 标签在下」的层叠布局的，
+// 标题独占整个按钮后 10pt 会显得空落，故按纯文字胶囊的比例取值。
+static const CGFloat kDYYYTabGlassTitleFontSize = 15.0;
+// 胶囊与拍摄键之间的间距。
+static const CGFloat kDYYYTabGlassPlusKeyGap = 12.0;
+// 拍摄图标在圆键内的四周留白。
+static const CGFloat kDYYYTabGlassPlusIconInset = 14.0;
+
+static const CGFloat kDYYYTabGlassTitleMaxWidth = 64.0;
+static const CGFloat kDYYYTabGlassTitleMinFontSize = 11.0;
+// platter 还没建起来时的兜底几何（beta7 实测值），量到真实值后即被取代。
+static const CGFloat kDYYYTabGlassPlatterFallbackHeight = 62.0;
+static const CGFloat kDYYYTabGlassPlatterFallbackInset = 21.0;
+// 胶囊里每颗 _UITabButton 的宽与首颗距胶囊左缘的距离（0.6.1-beta1 实测值），用法同上。
+static const CGFloat kDYYYTabGlassTabButtonFallbackWidth = 94.0;
+static const CGFloat kDYYYTabGlassTabButtonFallbackPad = 4.0;
+
+#pragma mark - 状态
+
+static UITabBar *gDYYYTabGlassBar = nil;
+static id gDYYYTabGlassProxy = nil;
+// 每个 item 对应的 tab 序号（validIndex）。与 items 同序等长。
+static NSArray<NSNumber *> *gDYYYTabGlassItemKinds = nil;
+// 每个 item 对应的抖音按钮，转发点击与读取角标都用它。与 items 同序等长。
+static NSArray *gDYYYTabGlassItemButtons = nil;
+// 每个 item 的抖音 tabID（取不到为 NSNull），按样式出图用。与 items 同序等长。
+static NSArray *gDYYYTabGlassItemTabIDs = nil;
+// 上次构建 items 用的签名，变了才重建，避免每次布局都换 items。
+static NSString *gDYYYTabGlassSignature = nil;
+// 最近一次见到的抖音底栏，供开关变化时立即生效。
+static __weak AWENormalModeTabBar *gDYYYTabGlassDouyinBar = nil;
+// 已挂上深浅色监听的场景，避免重复注册。
+static __weak UIWindowScene *gDYYYTabGlassObservedScene = nil;
+
+// 拍摄圆键及其内容。
+static UIVisualEffectView *gDYYYTabGlassPlusKey = nil;
+static UIImageView *gDYYYTabGlassPlusIcon = nil;
+// 新双色图标的青红层，垫在 gPlusIcon 下面；其他样式隐藏。
+static UIImageView *gDYYYTabGlassPlusAccent = nil;
+// 上次出图时的拍摄样式，样式变了要重新取图与着色。
+static UIButton *gDYYYTabGlassPlusHit = nil;
+// 抖音的拍摄按钮；被其他插件移除时为 nil，圆键随之隐藏。
+static __weak UIView *gDYYYTabGlassPlusButton = nil;
+// 上次裁过的图标源图，按指针比对，变了才重裁。
+static UIImage *gDYYYTabGlassPlusSourceIcon = nil;
+
+// 每次布局由 DYYYLGGlassLayoutGlass 刷新。弱引用：UIKit 换掉 platter 时这里自动变 nil。
+
+#pragma mark - 小工具
+
+static id DYYYTabGlassGlassValue(id object, NSString *key) {
+    if (!object || key.length == 0) return nil;
+    @try {
+        return [object valueForKey:key];
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+}
+
+static NSString *DYYYTabGlassGlassButtonTitle(id button) {
+    id inner = DYYYTabGlassGlassValue(button, @"innerView");
+    NSString *text = DYYYTabGlassGlassValue(DYYYTabGlassGlassValue(inner, @"label"), @"text");
+    if (text.length > 0) return text;
+
+    NSString *current = DYYYTabGlassGlassValue(inner, @"currentTitleText");
+    if (current.length > 0) return current;
+
+    NSString *label = [button isKindOfClass:UIView.class] ? [(UIView *)button accessibilityLabel] : nil;
+    return label.length > 0 ? label : nil;
+}
+
+static UITabBarController *DYYYTabGlassGlassControllerForView(UIView *view) {
+    for (UIResponder *responder = view.nextResponder; responder; responder = responder.nextResponder) {
+        if ([responder isKindOfClass:UITabBarController.class]) return (UITabBarController *)responder;
+    }
+    return nil;
+}
+
+#pragma mark - 开关
+
+static BOOL DYYYTabGlassGlassTabBarEnabled(void) {
+    return [DYYYUtils liquidGlassAvailable] && [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYEnableTabBarLiquidGlass"];
+}
+
+static BOOL DYYYTabGlassGlassTabBarUsesClear(void) { return YES; }
+
+#pragma mark - 材质
+
+static UIGlassEffect *DYYYTabGlassGlassMakeGlassEffect(UIUserInterfaceStyle style, BOOL interactive)
+    API_AVAILABLE(ios(26.0)) {
+    BOOL clear = DYYYTabGlassGlassTabBarUsesClear();
+    UIGlassEffect *effect = [UIGlassEffect effectWithStyle:
+        clear ? UIGlassEffectStyleClear : UIGlassEffectStyleRegular];
+    if (clear) effect.tintColor = [DYYYUtils liquidGlassTintForStyle:style];
+    effect.interactive = interactive;
+    return effect;
+}
+
+static NSString *const kDYYYTabGlassPlatterGlassKey = @"glassEffect";
+static char kDYYYTabGlassPlatterOriginalGlassKey;
+static BOOL gDYYYTabGlassPlatterGlassProbed = NO;
+static BOOL gDYYYTabGlassPlatterGlassSupported = NO;
+// glassEffect 是 copy 属性（实测回读指针 != 写入指针），所以记的是 platter 存下的那只【副本】。
+// 弱引用：platter 换掉它、或 platter 本身销毁，这里都会变，正好当作「需要重装」的信号。
+static __weak id gDYYYTabGlassPlatterGlassInstalled = nil;
+static UIUserInterfaceStyle gDYYYTabGlassPlatterGlassStyle = UIUserInterfaceStyleUnspecified;
+
+static void DYYYTabGlassGlassApplyPlatterGlass(UIView *platter, UIUserInterfaceStyle style)
+    API_AVAILABLE(ios(26.0)) {
+    if (!platter || (gDYYYTabGlassPlatterGlassProbed && !gDYYYTabGlassPlatterGlassSupported)) return;
+
+    id current = nil;
+    @try {
+        current = [platter valueForKey:kDYYYTabGlassPlatterGlassKey];
+    } @catch (__unused NSException *exception) {
+        gDYYYTabGlassPlatterGlassProbed = YES;      // 属性不在，永久放弃
+        gDYYYTabGlassPlatterGlassSupported = NO;
+        return;
+    }
+    gDYYYTabGlassPlatterGlassProbed = YES;
+    gDYYYTabGlassPlatterGlassSupported = YES;
+
+    BOOL patched = current && current == gDYYYTabGlassPlatterGlassInstalled;
+
+    if (!DYYYTabGlassGlassTabBarUsesClear()) {
+        if (!patched) return;                       // 没接管过，无需还原
+        id original = objc_getAssociatedObject(platter, &kDYYYTabGlassPlatterOriginalGlassKey);
+        @try {
+            [platter setValue:(original == NSNull.null ? nil : original)
+                       forKey:kDYYYTabGlassPlatterGlassKey];
+        } @catch (__unused NSException *exception) {}
+        gDYYYTabGlassPlatterGlassInstalled = nil;
+        gDYYYTabGlassPlatterGlassStyle = UIUserInterfaceStyleUnspecified;
+        [platter setNeedsLayout];
+        return;
+    }
+
+    // 装的还是我们那只、档位也没变，就什么都不做。逐帧无脑重写会打断系统的呈现过渡。
+    if (patched && style == gDYYYTabGlassPlatterGlassStyle) return;
+
+    if (!objc_getAssociatedObject(platter, &kDYYYTabGlassPlatterOriginalGlassKey)) {
+        objc_setAssociatedObject(platter, &kDYYYTabGlassPlatterOriginalGlassKey, current ?: NSNull.null,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    // interactive 照抄现有那只。UIKit 给 platter 的原厂配置就是 interactive=YES，整块胶囊的
+    // 按压/触摸/高亮动效全从它来；写死 NO 会把这些动效一并抹掉（beta23 踩过）。
+    BOOL interactive = [current isKindOfClass:UIGlassEffect.class]
+        ? ((UIGlassEffect *)current).interactive : YES;
+    @try {
+        [platter setValue:DYYYTabGlassGlassMakeGlassEffect(style, interactive) forKey:kDYYYTabGlassPlatterGlassKey];
+        gDYYYTabGlassPlatterGlassInstalled = [platter valueForKey:kDYYYTabGlassPlatterGlassKey];
+    } @catch (__unused NSException *exception) {
+        gDYYYTabGlassPlatterGlassSupported = NO;
+        return;
+    }
+    gDYYYTabGlassPlatterGlassStyle = style;
+    [platter setNeedsLayout];
+}
+
+#pragma mark - 深浅色
+
+static UIUserInterfaceStyle gDYYYTabGlassGlassStyle = UIUserInterfaceStyleUnspecified;
+
+static void DYYYTabGlassGlassApplyStyle(UIUserInterfaceStyle style) API_AVAILABLE(ios(26.0)) {
+    if (style == UIUserInterfaceStyleUnspecified || style == gDYYYTabGlassGlassStyle) return;
+    gDYYYTabGlassGlassStyle = style;
+
+    if (gDYYYTabGlassBar) gDYYYTabGlassBar.overrideUserInterfaceStyle = style;
+    if (gDYYYTabGlassPlusKey) {
+        gDYYYTabGlassPlusKey.overrideUserInterfaceStyle = style;
+        gDYYYTabGlassPlusKey.effect = DYYYTabGlassGlassMakeGlassEffect(style, YES);
+    }
+    // platter 的玻璃在下一次布局里跟着重写；trait 变化未必伴随布局，主动踢一次。
+    [gDYYYTabGlassDouyinBar setNeedsLayout];
+}
+
+// 挂在场景上监听，系统一切深浅色即刻改；否则只能等抖音下次布局，就是 beta3 那种「切一下页才变」。
+static void DYYYTabGlassGlassObserveStyle(UIView *host) API_AVAILABLE(ios(26.0)) {
+    UIWindowScene *scene = host.window.windowScene;
+    if (!scene || scene == gDYYYTabGlassObservedScene) return;
+    gDYYYTabGlassObservedScene = scene;
+    [scene registerForTraitChanges:@[ UITraitUserInterfaceStyle.class ]
+                       withHandler:^(UIWindowScene *changed, __unused UITraitCollection *previous) {
+        if (gDYYYTabGlassBar) DYYYTabGlassGlassApplyStyle(changed.traitCollection.userInterfaceStyle);
+    }];
+}
+
+#pragma mark - 内容取色
+
+static UIImage *DYYYTabGlassGlassTitleImage(NSString *title, UIColor *color);
+
+static UIUserInterfaceStyle gDYYYTabGlassInkStyle = UIUserInterfaceStyleUnspecified;
+// 上一次分类过的宿主文字色，按指针比对做缓存——这是逐帧路径，指针没变就不必再解析一次。
+static UIColor *gDYYYTabGlassInkHostColor = nil;
+static BOOL gDYYYTabGlassInkHostIsLight = NO;
+
+static UIUserInterfaceStyle gDYYYTabGlassPlusIconInkStyle = UIUserInterfaceStyleUnspecified;
+
+// 未选中的浓度。实测：50% 在亮底只有 3.94:1 不达 AA、55% 是 4.68:1 卡线，
+// 60% 两侧分别 6.69 / 5.59。不用系统 secondaryLabel——它浅色档是 #3C3C43 而非纯黑，
+// 压在白页上只有 3.4:1。保留 alpha、底色取纯黑白，与 DYYYLGGlassInkTextColor 同一口径。
+static const CGFloat kDYYYTabGlassInkSecondaryAlpha = 0.60;
+
+static UIColor *DYYYTabGlassGlassInkColor(BOOL selected) {
+    CGFloat white = (gDYYYTabGlassInkStyle == UIUserInterfaceStyleDark) ? 1.0 : 0.0;
+    return [UIColor colorWithWhite:white alpha:(selected ? 1.0 : kDYYYTabGlassInkSecondaryAlpha)];
+}
+
+static UIImage *DYYYTabGlassGlassItemImage(NSString *tabID, NSString *title, BOOL selected, UIColor *color);
+
+// 按当前极性与底栏样式重渲染每个 item 的两张图。就地改 image / selectedImage，不重建 items——
+// 极性变化和切页是同一时刻，重建 items 会打断系统正在跑的透镜位移动画。
+static void DYYYTabGlassGlassApplyItemImages(void) {
+    if (!gDYYYTabGlassBar) return;
+    UIColor *selected = DYYYTabGlassGlassInkColor(YES);
+    UIColor *normal = DYYYTabGlassGlassInkColor(NO);
+    [gDYYYTabGlassBar.items enumerateObjectsUsingBlock:^(UITabBarItem *item, NSUInteger index, __unused BOOL *stop) {
+        // 标题不另存一份：建 item 时就写进 accessibilityLabel 了，跟着 item 走不会失配。
+        NSString *title = item.accessibilityLabel;
+        if (title.length == 0) return;
+        id tabID = index < gDYYYTabGlassItemTabIDs.count ? gDYYYTabGlassItemTabIDs[index] : nil;
+        if (![tabID isKindOfClass:NSString.class]) tabID = nil;
+        item.image = DYYYTabGlassGlassItemImage(tabID, title, NO, normal);
+        item.selectedImage = DYYYTabGlassGlassItemImage(tabID, title, YES, selected);
+    }];
+}
+
+static UIColor *DYYYTabGlassGlassHostTitleColor(NSArray *buttons, NSInteger selectedIndex) {
+    for (id button in buttons) {
+        UIView *view = [button isKindOfClass:UIView.class] ? button : nil;
+        if (!view || view.isHidden || !view.superview) continue;
+        if ([DYYYTabGlassGlassValue(button, @"type") longLongValue] == kDYYYTabGlassPlusButtonType) continue;
+        if ([DYYYTabGlassGlassValue(button, @"validIndex") integerValue] != selectedIndex) continue;
+        id inner = DYYYTabGlassGlassValue(button, @"innerView");
+        return DYYYTabGlassGlassValue(DYYYTabGlassGlassValue(inner, @"label"), @"textColor");
+    }
+    return nil;
+}
+
+static UIUserInterfaceStyle DYYYTabGlassGlassInkStyleFor(NSArray *buttons, NSInteger selectedIndex,
+                                               UIUserInterfaceStyle fallback) {
+    UIColor *host = DYYYTabGlassGlassHostTitleColor(buttons, selectedIndex);
+    if (!host) {
+        return gDYYYTabGlassInkStyle != UIUserInterfaceStyleUnspecified ? gDYYYTabGlassInkStyle : fallback;
+    }
+    if (host == gDYYYTabGlassInkHostColor) return gDYYYTabGlassInkHostIsLight ? UIUserInterfaceStyleLight
+                                                      : UIUserInterfaceStyleDark;
+
+    // 宿主给的可能是动态色，按当前场景解析后才是真值。
+    UIColor *resolved = [host resolvedColorWithTraitCollection:
+        [UITraitCollection traitCollectionWithUserInterfaceStyle:fallback]];
+    // 切页过渡里抖音会把文字整体淡出，那一帧的色不能用来判极性，保持上一次的结论。
+    if (CGColorGetAlpha(resolved.CGColor) < 0.5) {
+        return gDYYYTabGlassInkStyle != UIUserInterfaceStyleUnspecified ? gDYYYTabGlassInkStyle : fallback;
+    }
+
+    // 宿主用黑系文字 → 这一页底色偏亮 → 我们也用黑系。
+    gDYYYTabGlassInkHostColor = host;
+    gDYYYTabGlassInkHostIsLight = [DYYYUtils liquidGlassColorIsInk:resolved];
+    return gDYYYTabGlassInkHostIsLight ? UIUserInterfaceStyleLight : UIUserInterfaceStyleDark;
+}
+
+static void DYYYTabGlassGlassApplyInk(UIUserInterfaceStyle style) {
+    // gBar 的判定放在记录档位之前：没底栏可写就不能把档位记下来，否则下次同档会被跳过。
+    if (style == UIUserInterfaceStyleUnspecified || !gDYYYTabGlassBar || style == gDYYYTabGlassInkStyle) return;
+    gDYYYTabGlassInkStyle = style;
+    DYYYTabGlassGlassApplyItemImages();
+}
+
+#pragma mark - 标题图
+
+static UIImage *DYYYTabGlassGlassTitleImage(NSString *title, UIColor *color) {
+    UIFont *font = [UIFont systemFontOfSize:kDYYYTabGlassTitleFontSize weight:UIFontWeightSemibold];
+    CGFloat width = [title sizeWithAttributes:@{ NSFontAttributeName: font }].width;
+    if (width > kDYYYTabGlassTitleMaxWidth) {
+        CGFloat fontSize = MAX(kDYYYTabGlassTitleMinFontSize, floor(kDYYYTabGlassTitleFontSize * kDYYYTabGlassTitleMaxWidth / width));
+        font = [UIFont systemFontOfSize:fontSize weight:UIFontWeightSemibold];
+    }
+    NSDictionary *attributes = @{
+        NSFontAttributeName: font,
+        NSForegroundColorAttributeName: color
+    };
+    CGSize size = [title sizeWithAttributes:attributes];
+    size.width = ceil(size.width);
+    size.height = ceil(size.height);
+
+    UIGraphicsImageRendererFormat *format = UIGraphicsImageRendererFormat.preferredFormat;
+    format.opaque = NO;
+    UIImage *image = [[[UIGraphicsImageRenderer alloc] initWithSize:size format:format]
+        imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
+            [title drawAtPoint:CGPointZero withAttributes:attributes];
+        }];
+    return [image imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+}
+
+// 「图标+文字」：图标在上、10pt 文字在下合成一张图，交给系统当图标居中；文字宽度同样受邻项间距限制。
+
+// 按底栏样式出一张 item 图，颜色烤进图里（悬浮 provider 不采纳 tint）。表外 tabID 回落标题图。
+static UIImage *DYYYTabGlassGlassItemImage(NSString *tabID, NSString *title, BOOL selected, UIColor *color) {
+    return DYYYTabGlassGlassTitleImage(title, color);
+}
+
+#pragma mark - 拍摄图标
+
+// 取抖音当前真实显示的拍摄图标。别的插件替换图标改的正是这个 image view，故天然跟随
+//（UIButton 自己的 state image 也经 imageView 渲染，同样命中）。
+static UIImage *DYYYTabGlassGlassPlusSourceIcon(UIView *button) {
+    for (UIView *subview in button.subviews) {
+        if (![subview isKindOfClass:UIImageView.class]) continue;
+        UIImage *image = ((UIImageView *)subview).image;
+        if (image) return image;
+    }
+    return nil;
+}
+
+// 按 alpha 裁掉四周透明留白。抖音给的图是 75×49 而字形只有约 33×30，直接缩进圆键会小到看不清；
+// 裁完再排版，换了图标也自适应，不必写死内缩。
+static UIImage *DYYYTabGlassGlassTrimTransparent(UIImage *image) {
+    CGImageRef source = image.CGImage;
+    if (!source) return image;
+
+    size_t width = CGImageGetWidth(source);
+    size_t height = CGImageGetHeight(source);
+    if (width == 0 || height == 0) return image;
+
+    uint8_t *alpha = (uint8_t *)calloc(width * height, sizeof(uint8_t));
+    if (!alpha) return image;
+
+    CGContextRef context = CGBitmapContextCreate(alpha, width, height, 8, width, NULL,
+                                                 (CGBitmapInfo)kCGImageAlphaOnly);
+    if (!context) {
+        free(alpha);
+        return image;
+    }
+    CGContextDrawImage(context, CGRectMake(0.0, 0.0, width, height), source);
+    CGContextRelease(context);
+
+    size_t minX = width, minY = height, maxX = 0, maxY = 0;
+    for (size_t y = 0; y < height; y++) {
+        for (size_t x = 0; x < width; x++) {
+            if (alpha[y * width + x] == 0) continue;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+        }
+    }
+    free(alpha);
+    if (minX > maxX || minY > maxY) return image;   // 整张全透明，原样返回
+
+    CGImageRef cropped = CGImageCreateWithImageInRect(
+        source, CGRectMake(minX, minY, maxX - minX + 1, maxY - minY + 1));
+    if (!cropped) return image;
+
+    UIImage *result = [UIImage imageWithCGImage:cropped
+                                          scale:image.scale
+                                    orientation:image.imageOrientation];
+    CGImageRelease(cropped);
+    return result;
+}
+
+// 图标同样走模板图：抖音会随页面在白/黑两版图标间切换，只取 alpha 则两版形状一致，
+// 着色跟内容极性走（见「内容取色」），黑视频上不会出现看不见的黑图标。
+CGFloat DYYYTabGlassGlassPlusIconInset(void) { return kDYYYTabGlassPlusIconInset; }
+
+// 拍摄圆键的图按「拍摄按钮」选项出：默认镜像抖音原图；新图标 / 新双色图标为照相机，
+// 双色在机身下垫一层青红；自定义图片用用户的圆形图。
+static void DYYYTabGlassGlassSyncPlusIcon(UIView *button) {
+    if (gDYYYTabGlassPlusIconInkStyle != gDYYYTabGlassInkStyle) {
+        gDYYYTabGlassPlusIconInkStyle = gDYYYTabGlassInkStyle;
+        gDYYYTabGlassPlusIcon.tintColor = DYYYTabGlassGlassInkColor(YES);
+    }
+    UIImage *source = DYYYTabGlassGlassPlusSourceIcon(button);
+    if (!source || source == gDYYYTabGlassPlusSourceIcon) return;
+    gDYYYTabGlassPlusSourceIcon = source;
+    gDYYYTabGlassPlusIcon.image = [DYYYTabGlassGlassTrimTransparent(source) imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+}
+
+#pragma mark - 点击转发
+
+@implementation DYYYTabGlassGlassTabBarProxy
+
+// 拍摄不是页面，走抖音自己的拍摄回调，传它自己的按钮。
+- (void)plusKeyDidTap {
+    UITabBarController *controller = DYYYTabGlassGlassControllerForView(gDYYYTabGlassPlusKey);
+    SEL selector = NSSelectorFromString(kDYYYTabGlassPlusClickSelector);
+    if (controller && gDYYYTabGlassPlusButton && [controller respondsToSelector:selector]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(controller, selector, gDYYYTabGlassPlusButton);
+    }
+}
+
+- (void)tabBar:(UITabBar *)tabBar didSelectItem:(UITabBarItem *)item {
+    UITabBarController *controller = DYYYTabGlassGlassControllerForView(tabBar);
+    NSUInteger index = [tabBar.items indexOfObjectIdenticalTo:item];
+    if (!controller || index == NSNotFound || index >= gDYYYTabGlassItemButtons.count) return;
+
+    id button = gDYYYTabGlassItemButtons[index];
+    // 切页必须走抖音自己的按钮点击回调。直接写 selectedIndex 会被它的 override 吞掉——
+    // 实测底栏选中态变了、抖音的 selectedIndex 仍是 0、页面也没换，只是「看着切了」。
+    // 连手势一并原样回传，抖音据此构造点击上下文，与真实点按走完全相同的路径。
+    SEL selector = NSSelectorFromString(kDYYYTabGlassTabClickSelector);
+    if ([controller respondsToSelector:selector]) {
+        ((void (*)(id, SEL, id, id))objc_msgSend)(controller, selector, button,
+                                                  DYYYTabGlassGlassValue(button, @"singleTapGes"));
+    }
+}
+
+@end
+
+#pragma mark - 未读角标镜像
+
+// 读抖音按钮当前的角标。走子视图扫描而不是 badge / badgeContainerView 属性：那两个 getter
+// 可能懒建对象，而这里是逐帧路径，只读不建才安全。
+static NSString *DYYYTabGlassGlassBadgeValue(id button) {
+    if (![button isKindOfClass:UIView.class]) return nil;
+
+    UIView *badge = nil;
+    for (UIView *container in ((UIView *)button).subviews) {
+        if (![NSStringFromClass(container.class) isEqualToString:kDYYYTabGlassBadgeContainerClass]
+            || container.isHidden || container.alpha < 0.01) {
+            continue;
+        }
+        for (UIView *candidate in container.subviews) {
+            // 尺寸也要判：抖音会把角标留在树里收成零尺寸，那不算「有角标」。
+            if ([NSStringFromClass(candidate.class) isEqualToString:kDYYYTabGlassBadgeClass]
+                && !candidate.isHidden && candidate.alpha >= 0.01
+                && !CGRectIsEmpty(candidate.bounds)) {
+                badge = candidate;
+                break;
+            }
+        }
+        if (badge) break;
+    }
+    if (!badge) return nil;
+
+    NSString *text = DYYYTabGlassGlassValue(badge, @"badgeText");
+    if (text.length > 0) return text;                      // 抖音自己给的文案，如 "99+"
+    unsigned long long count = [DYYYTabGlassGlassValue(badge, @"badgeNumber") unsignedLongLongValue];
+    if (count > 0) return @(count).stringValue;
+    return @"";                                            // 有角标但无数字 → 纯红点
+}
+
+// badgeValue 交给系统渲染即得 iOS 26 悬浮胶囊里的原生红点，badgeColor 留 nil 用系统默认色。
+static void DYYYTabGlassGlassSyncBadges(void) {
+    NSUInteger count = MIN(gDYYYTabGlassItemButtons.count, gDYYYTabGlassBar.items.count);
+    for (NSUInteger i = 0; i < count; i++) {
+        UITabBarItem *item = gDYYYTabGlassBar.items[i];
+        NSString *value = DYYYTabGlassGlassBadgeValue(gDYYYTabGlassItemButtons[i]);
+        NSString *current = item.badgeValue;
+        if (current != value && ![current isEqualToString:value]) item.badgeValue = value;
+    }
+}
+
+#pragma mark - 内容镜像
+
+static BOOL DYYYTabGlassGlassSyncItems(UITabBarController *controller, NSArray *buttons) {
+    NSMutableArray<NSString *> *titles = [NSMutableArray array];
+    NSMutableArray<NSNumber *> *kinds = [NSMutableArray array];
+    NSMutableArray *mirrored = [NSMutableArray array];
+    NSMutableArray *tabIDs = [NSMutableArray array];
+    // 底栏样式进签名：换样式即重建 items、重新出图。
+    NSMutableString *signature = [NSMutableString string];
+    UIView *plus = nil;
+
+    for (id button in buttons) {
+        UIView *view = [button isKindOfClass:UIView.class] ? button : nil;
+        // 源按钮的 opacity 会被本功能置零，不能作为存在性信号；显隐与父视图关系保留原始语义。
+        if (!view || view.isHidden || !view.superview) continue;
+
+        if ([DYYYTabGlassGlassValue(button, @"type") longLongValue] == kDYYYTabGlassPlusButtonType) {
+            plus = view;
+            continue;                  // 拍摄不进胶囊，见 DYYYLGGlassMakePlusKey
+        }
+
+        NSString *title = DYYYTabGlassGlassButtonTitle(button);
+        if (title.length == 0) continue;
+
+        NSInteger kind = [DYYYTabGlassGlassValue(button, @"validIndex") integerValue];
+        NSString *tabID = DYYYTabGlassGlassValue(button, @"tabID");
+        [titles addObject:title];
+        [kinds addObject:@(kind)];
+        [mirrored addObject:button];
+        [tabIDs addObject:tabID ?: (id)NSNull.null];
+        // tabID 取没取到也进签名：映射表晚于首轮布局就绪时，取到后要补出图标。
+        [signature appendFormat:@"%@:%ld:%@|", title, (long)kind, tabID ?: @"-"];
+    }
+
+    gDYYYTabGlassPlusButton = plus;
+
+    if (mirrored.count == 0) return NO;
+    // 按钮引用每次都刷新：抖音可能重建出标题相同的新按钮，签名察觉不到，
+    // 拿着旧对象转发点击就会落空。items 与它同序等长，只在签名变化时才重建。
+    gDYYYTabGlassItemButtons = mirrored;
+
+    BOOL rebuilt = ![signature isEqualToString:gDYYYTabGlassSignature];
+    if (rebuilt) {
+        NSMutableArray<UITabBarItem *> *items = [NSMutableArray arrayWithCapacity:titles.count];
+        [titles enumerateObjectsUsingBlock:^(NSString *title, NSUInteger index, __unused BOOL *stop) {
+            // 标题走 image 槽（见 DYYYLGGlassTitleImage），title 置空，否则系统还会再排一行标签。
+            // 图交给 DYYYLGGlassApplyItemImages 按极性统一渲染，选中与未选中各一张。
+            UITabBarItem *item = [[UITabBarItem alloc] initWithTitle:nil image:nil
+                                                                 tag:(NSInteger)index];
+            item.accessibilityLabel = title;   // 标题不再是文字，旁白与探针都靠它认人
+            [items addObject:item];
+        }];
+        gDYYYTabGlassBar.items = items;
+        gDYYYTabGlassItemKinds = kinds;
+        gDYYYTabGlassItemTabIDs = tabIDs;
+        gDYYYTabGlassSignature = [signature copy];
+        DYYYTabGlassGlassApplyItemImages();
+    }
+
+    NSUInteger current = [gDYYYTabGlassItemKinds indexOfObject:@((NSInteger)controller.selectedIndex)];
+    if (current != NSNotFound && current < gDYYYTabGlassBar.items.count) {
+        UITabBarItem *item = gDYYYTabGlassBar.items[current];
+        if (gDYYYTabGlassBar.selectedItem != item) gDYYYTabGlassBar.selectedItem = item;
+    }
+
+    DYYYTabGlassGlassSyncBadges();
+    return rebuilt;
+}
+
+static BOOL gDYYYTabGlassPendingMirror = NO;
+
+static void DYYYTabGlassGlassScheduleMirror(void) {
+    if (gDYYYTabGlassPendingMirror || !gDYYYTabGlassBar) return;
+    gDYYYTabGlassPendingMirror = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        gDYYYTabGlassPendingMirror = NO;
+        AWENormalModeTabBar *bar = gDYYYTabGlassDouyinBar;
+        UITabBarController *controller = bar ? DYYYTabGlassGlassControllerForView(bar) : nil;
+        if (!gDYYYTabGlassBar || !controller) return;
+        // 内容没变时纯空转；变了才重建 items，并要求底栏重排一次几何——胶囊宽度归 UIKit 算，
+        // 圆键位置得跟着它走。签名收敛后不再标脏，不会形成布局环。
+        // 取色排在同步之前：标题图要按极性渲染，极性得先定下来。
+        NSArray *buttons = DYYYTabGlassGlassValue(bar, @"tabBarButtons");
+        DYYYTabGlassGlassApplyInk(DYYYTabGlassGlassInkStyleFor(buttons, (NSInteger)controller.selectedIndex,
+                                           gDYYYTabGlassGlassStyle));
+        if (DYYYTabGlassGlassSyncItems(controller, buttons)) [bar setNeedsLayout];
+    });
+}
+
+#pragma mark - 拍摄圆键
+
+static UIVisualEffectView *DYYYTabGlassGlassMakePlusKey(id target) API_AVAILABLE(ios(26.0)) {
+    UIVisualEffectView *key =
+        [[UIVisualEffectView alloc] initWithEffect:DYYYTabGlassGlassMakeGlassEffect(gDYYYTabGlassGlassStyle, YES)];
+    key.cornerConfiguration = [UICornerConfiguration capsuleConfiguration];
+
+    gDYYYTabGlassPlusAccent = [[UIImageView alloc] init];
+    gDYYYTabGlassPlusAccent.contentMode = UIViewContentModeScaleAspectFit;
+    gDYYYTabGlassPlusAccent.hidden = YES;
+    [key.contentView addSubview:gDYYYTabGlassPlusAccent];
+
+    gDYYYTabGlassPlusIcon = [[UIImageView alloc] init];
+    gDYYYTabGlassPlusIcon.contentMode = UIViewContentModeScaleAspectFit;
+    [key.contentView addSubview:gDYYYTabGlassPlusIcon];
+
+    gDYYYTabGlassPlusHit = [UIButton buttonWithType:UIButtonTypeCustom];
+    [gDYYYTabGlassPlusHit addTarget:target action:@selector(plusKeyDidTap)
+       forControlEvents:UIControlEventTouchUpInside];
+    [key.contentView addSubview:gDYYYTabGlassPlusHit];
+    return key;
+}
+
+static UIView *DYYYTabGlassGlassFindPlatter(UIView *root) {
+    for (UIView *subview in root.subviews) {
+        if ([NSStringFromClass(subview.class) containsString:kDYYYTabGlassPlatterClass]) return subview;
+        UIView *found = DYYYTabGlassGlassFindPlatter(subview);
+        if (found) return found;
+    }
+    return nil;
+}
+
+#pragma mark - 几何
+
+typedef struct {
+    CGFloat buttonWidth;   // b
+    CGFloat buttonPad;     // pad
+    CGFloat height;        // 胶囊高，即圆键直径
+    CGFloat top;           // 胶囊在 UITabBar 内的 y
+    CGFloat inset;         // UITabBar 左右到胶囊的内缩
+} DYYYTabGlassGlassMetrics;
+
+static const DYYYTabGlassGlassMetrics kDYYYTabGlassGlassFallbackMetrics = {
+    kDYYYTabGlassTabButtonFallbackWidth, kDYYYTabGlassTabButtonFallbackPad, kDYYYTabGlassPlatterFallbackHeight, 0.0, kDYYYTabGlassPlatterFallbackInset
+};
+static DYYYTabGlassGlassMetrics gDYYYTabGlassMetrics = kDYYYTabGlassGlassFallbackMetrics;
+// 量这些值时抖音底栏的宽度；宽度变了全部作废，重新量。
+static CGFloat gDYYYTabGlassMetricsBarWidth = 0.0;
+// 最近一次布局的读数，只给探针看。
+static CGFloat gDYYYTabGlassGeometryTarget = 0.0;
+
+static void DYYYTabGlassGlassCollectTabButtons(UIView *root, NSMutableArray<UIView *> *result) {
+    for (UIView *subview in root.subviews) {
+        if ([NSStringFromClass(subview.class) isEqualToString:kDYYYTabGlassTabButtonClass]) [result addObject:subview];
+        else DYYYTabGlassGlassCollectTabButtons(subview, result);
+    }
+}
+
+static BOOL DYYYTabGlassGlassMetricChanged(CGFloat a, CGFloat b) {
+    return fabs(a - b) > 0.5;
+}
+
+// 从 platter 实物量出各项；返回 YES 表示有量变了，需要按新值重算一轮。
+// 胶囊里每颗按钮画两份（选中 / 未选中），frame 相同，取 minX 最小与次小的两个不同值即可。
+// 内缩只在压缩态量：此时胶囊两侧各让出一个内缩；自然态胶囊比可用宽度窄，读数偏大不可信。
+static BOOL DYYYTabGlassGlassMeasure(UIView *platter, NSUInteger count) {
+    if (!platter || CGRectGetHeight(platter.bounds) <= 0.0) return NO;
+    CGRect frame = [platter convertRect:platter.bounds toView:gDYYYTabGlassBar];
+    DYYYTabGlassGlassMetrics metrics = gDYYYTabGlassMetrics;
+    metrics.height = CGRectGetHeight(frame);
+    metrics.top = CGRectGetMinY(frame);
+
+    NSMutableArray<UIView *> *buttons = [NSMutableArray array];
+    DYYYTabGlassGlassCollectTabButtons(platter, buttons);
+    CGFloat first = CGFLOAT_MAX, second = CGFLOAT_MAX, width = 0.0;
+    for (UIView *button in buttons) {
+        CGRect rect = [button convertRect:button.bounds toView:platter];
+        CGFloat x = CGRectGetMinX(rect);
+        if (x < first - 0.5) {
+            if (first < CGFLOAT_MAX) second = first;
+            first = x;
+            width = CGRectGetWidth(rect);
+        } else if (x > first + 0.5 && x < second - 0.5) {
+            second = x;
+        }
+    }
+    if (first < CGFLOAT_MAX && width > 0.0) {
+        metrics.buttonPad = first;
+        metrics.buttonWidth = width;
+    }
+    CGFloat naturalPitch = metrics.buttonWidth - 2.0 * metrics.buttonPad;
+    if (count >= 2 && second < CGFLOAT_MAX && second - first < naturalPitch - 0.5) {
+        metrics.inset = (CGRectGetWidth(gDYYYTabGlassBar.bounds) - CGRectGetWidth(frame)) / 2.0;
+    }
+
+    BOOL changed = DYYYTabGlassGlassMetricChanged(metrics.buttonWidth, gDYYYTabGlassMetrics.buttonWidth) ||
+                   DYYYTabGlassGlassMetricChanged(metrics.buttonPad, gDYYYTabGlassMetrics.buttonPad) ||
+                   DYYYTabGlassGlassMetricChanged(metrics.height, gDYYYTabGlassMetrics.height) ||
+                   DYYYTabGlassGlassMetricChanged(metrics.inset, gDYYYTabGlassMetrics.inset);
+    gDYYYTabGlassMetrics = metrics;
+    return changed;
+}
+
+// 胶囊宽度跟着 4+1 参考态走：参考态是 reference 个项目、右侧有拍摄圆键、整组占满底栏两侧内缩之间。
+// 由参考态得出相邻间距，少几项就少几个间距——每项的大小与位置间隔都与参考态相同，不拉长。
+static CGFloat DYYYTabGlassGlassCapsuleWidth(NSUInteger count, NSUInteger reference, CGFloat barWidth) {
+    CGFloat single = gDYYYTabGlassMetrics.buttonWidth + 2.0 * gDYYYTabGlassMetrics.buttonPad;
+    CGFloat naturalPitch = MAX(gDYYYTabGlassMetrics.buttonWidth - 2.0 * gDYYYTabGlassMetrics.buttonPad, 0.0);
+    reference = MAX(reference, count);
+    if (count <= 1 || reference <= 1) return single;
+
+    CGFloat available = barWidth - gDYYYTabGlassMetrics.height - kDYYYTabGlassPlusKeyGap - 2.0 * gDYYYTabGlassMetrics.inset;
+    CGFloat referenceWidth = MIN(available, single + (reference - 1) * naturalPitch);
+    CGFloat pitch = MIN(MAX((referenceWidth - single) / (reference - 1), 0.0), naturalPitch);
+    return single + (count - 1) * pitch;
+}
+
+static void DYYYTabGlassGlassLayoutGlass(AWENormalModeTabBar *douyinBar, NSUInteger reference) API_AVAILABLE(ios(26.0)) {
+    CGSize size = douyinBar.bounds.size;
+    if (DYYYTabGlassGlassMetricChanged(size.width, gDYYYTabGlassMetricsBarWidth)) {
+        gDYYYTabGlassMetrics = kDYYYTabGlassGlassFallbackMetrics;
+        gDYYYTabGlassMetricsBarWidth = size.width;
+    }
+
+    // 拍摄按钮被移除时圆键一并隐藏。
+    BOOL available = gDYYYTabGlassPlusButton != nil;
+    if (gDYYYTabGlassPlusKey.isHidden == available) gDYYYTabGlassPlusKey.hidden = !available;
+
+    NSUInteger count = gDYYYTabGlassBar.items.count;
+    UIView *platterView = nil;
+    for (NSUInteger pass = 0; pass < 2; pass++) {
+        gDYYYTabGlassGeometryTarget = DYYYTabGlassGlassCapsuleWidth(count, reference, size.width);
+        CGFloat barWidth = gDYYYTabGlassGeometryTarget + 2.0 * gDYYYTabGlassMetrics.inset;
+        CGRect frame = gDYYYTabGlassBar.frame;
+        if (fabs(CGRectGetWidth(frame) - barWidth) > 0.01 || CGRectGetHeight(frame) != size.height) {
+            gDYYYTabGlassBar.frame = CGRectMake(CGRectGetMinX(frame), 0.0, barWidth, size.height);
+        }
+        [gDYYYTabGlassBar layoutIfNeeded];
+        platterView = DYYYTabGlassGlassFindPlatter(gDYYYTabGlassBar);
+        if (!DYYYTabGlassGlassMeasure(platterView, count)) break;
+    }
+    // 找到 platter 就顺手把它的玻璃换成 Clear。放在所有提前 return 之前：
+    // 拍摄按钮被移除时下面会早退，但胶囊材质照样要生效。
+    DYYYTabGlassGlassApplyPlatterGlass(platterView, gDYYYTabGlassGlassStyle);
+
+    CGRect platter = platterView ? [platterView convertRect:platterView.bounds toView:gDYYYTabGlassBar] : CGRectZero;
+    BOOL measured = CGRectGetWidth(platter) > 0.0;
+    CGFloat capsule = measured ? CGRectGetWidth(platter) : gDYYYTabGlassGeometryTarget;
+    CGFloat capsuleX = measured ? CGRectGetMinX(platter) : gDYYYTabGlassMetrics.inset;
+    CGFloat diameter = gDYYYTabGlassMetrics.height;
+
+    CGFloat group = capsule + (available ? kDYYYTabGlassPlusKeyGap + diameter : 0.0);
+    CGFloat left = (size.width - group) / 2.0;
+    CGRect barFrame = gDYYYTabGlassBar.frame;
+    barFrame.origin.x = left - capsuleX;
+    if (!CGRectEqualToRect(gDYYYTabGlassBar.frame, barFrame)) gDYYYTabGlassBar.frame = barFrame;
+    if (!available) return;
+
+    CGRect keyFrame = CGRectMake(left + capsule + kDYYYTabGlassPlusKeyGap, gDYYYTabGlassMetrics.top, diameter, diameter);
+    if (!CGRectEqualToRect(gDYYYTabGlassPlusKey.frame, keyFrame)) gDYYYTabGlassPlusKey.frame = keyFrame;
+
+    CGRect bounds = gDYYYTabGlassPlusKey.bounds;
+    CGFloat iconInset = DYYYTabGlassGlassPlusIconInset();
+    CGRect iconFrame = CGRectInset(bounds, iconInset, iconInset);
+    if (!CGRectEqualToRect(gDYYYTabGlassPlusIcon.frame, iconFrame)) gDYYYTabGlassPlusIcon.frame = iconFrame;
+    if (!CGRectEqualToRect(gDYYYTabGlassPlusAccent.frame, iconFrame)) gDYYYTabGlassPlusAccent.frame = iconFrame;
+    if (!CGRectEqualToRect(gDYYYTabGlassPlusHit.frame, bounds)) gDYYYTabGlassPlusHit.frame = bounds;
+
+    DYYYTabGlassGlassSyncPlusIcon(gDYYYTabGlassPlusButton);
+}
+
+static void DYYYTabGlassGlassSetDouyinContentVisible(AWENormalModeTabBar *douyinBar, NSArray *buttons, BOOL visible) {
+    float opacity = visible ? 1.0f : 0.0f;
+    NSArray *backdrops = @[ DYYYTabGlassGlassValue(douyinBar, @"backgroundView") ?: NSNull.null,
+                            DYYYTabGlassGlassValue(douyinBar, @"awe_blurView") ?: NSNull.null,
+                            DYYYTabGlassGlassValue(douyinBar, @"separatorLine") ?: NSNull.null,
+                            DYYYTabGlassGlassValue(douyinBar, @"skinContainerView") ?: NSNull.null ];
+    for (id backdrop in backdrops) {
+        if (![backdrop isKindOfClass:UIView.class]) continue;
+        CALayer *layer = ((UIView *)backdrop).layer;
+        if (layer.opacity != opacity) layer.opacity = opacity;
+    }
+    for (id button in buttons) {
+        if (![button isKindOfClass:UIView.class]) continue;
+        UIView *view = button;
+        if (view.layer.opacity != opacity) view.layer.opacity = opacity;
+        if (view.userInteractionEnabled != visible) view.userInteractionEnabled = visible;
+    }
+}
+
+// 4+1 参考态里胶囊的项目数：当前在镜像的项目，加上被「移除底栏项目」隐藏的。
+// 抖音或其他插件自己藏起的按钮不算，那不是参考态的一部分。
+static NSUInteger DYYYTabGlassGlassReferenceCount(NSArray *buttons) {
+    NSUInteger count = 0;
+    for (id button in buttons) {
+        UIView *view = [button isKindOfClass:UIView.class] ? button : nil;
+        if (!view.superview) continue;
+        if ([DYYYTabGlassGlassValue(button, @"type") longLongValue] == kDYYYTabGlassPlusButtonType) continue;
+        if (!view.isHidden) count++;
+    }
+    return count;
+}
+
+#pragma mark - 挂载与拆除
+
+// 整个功能只在 iOS 26 及以上成立——低版本没有 UIGlassEffect，装上去只是一条没有玻璃的
+// UITabBar 盖住抖音底栏，比原生还差。故在此一处挡住，各 helper 用 API_AVAILABLE 标注。
+static void DYYYTabGlassGlassUpdate(AWENormalModeTabBar *douyinBar) API_AVAILABLE(ios(26.0)) {
+    // 抖音换过底栏实例时，先把旧那条的内容还原——玻璃底栏只会跟着新实例走，
+    // 旧实例的按钮若停在 opacity=0，它再次出现时就是一条空底栏。
+    AWENormalModeTabBar *previousBar = gDYYYTabGlassDouyinBar;
+    if (previousBar && previousBar != douyinBar && gDYYYTabGlassBar) {
+        DYYYTabGlassGlassSetDouyinContentVisible(
+            previousBar, DYYYTabGlassGlassValue(previousBar, @"tabBarButtons"), YES);
+    }
+    gDYYYTabGlassDouyinBar = douyinBar;
+
+    NSArray *buttons = DYYYTabGlassGlassValue(douyinBar, @"tabBarButtons");
+    if (!DYYYTabGlassGlassTabBarEnabled()) {
+        if (!gDYYYTabGlassBar) return;
+        DYYYTabGlassGlassSetDouyinContentVisible(douyinBar, buttons, YES);
+        [gDYYYTabGlassBar removeFromSuperview];
+        [gDYYYTabGlassPlusKey removeFromSuperview];
+        gDYYYTabGlassBar = nil;
+        gDYYYTabGlassPlusKey = nil;
+        gDYYYTabGlassPlusIcon = nil;
+        gDYYYTabGlassPlusAccent = nil;
+        gDYYYTabGlassPlusHit = nil;
+        gDYYYTabGlassPlusButton = nil;
+        gDYYYTabGlassPlusSourceIcon = nil;
+        gDYYYTabGlassProxy = nil;
+        gDYYYTabGlassItemKinds = nil;
+        gDYYYTabGlassItemButtons = nil;
+        gDYYYTabGlassItemTabIDs = nil;
+        gDYYYTabGlassSignature = nil;
+        // 重新开启时材质与 platter 玻璃都要能重新装上；探测结果不复位，那是设备能力，一次为准。
+        gDYYYTabGlassGlassStyle = UIUserInterfaceStyleUnspecified;
+        gDYYYTabGlassInkStyle = UIUserInterfaceStyleUnspecified;
+        gDYYYTabGlassInkHostColor = nil;
+        gDYYYTabGlassPlusIconInkStyle = UIUserInterfaceStyleUnspecified;
+        gDYYYTabGlassPlatterGlassStyle = UIUserInterfaceStyleUnspecified;
+        gDYYYTabGlassPlatterGlassInstalled = nil;
+        // 玻璃底栏是可视化的落位基准，它一撤可视化必须跟着撤，否则会留下一层孤儿视图。
+        return;
+    }
+    // 场景监听不撤：handler 只在 gBar 存在时才动手，重新开启开关后照旧生效。
+
+    UITabBarController *controller = DYYYTabGlassGlassControllerForView(douyinBar);
+    if (!controller) return;
+
+    if (!gDYYYTabGlassBar) {
+        gDYYYTabGlassProxy = [[DYYYTabGlassGlassTabBarProxy alloc] init];
+        // 不碰 appearance：实测出厂态与装了 Regular backgroundEffect 渲染逐像素相同，
+        // 悬浮 provider 不读这个旧 API。材质统一由 DYYYLGGlassApplyPlatterGlass 决定。
+        gDYYYTabGlassBar = [[UITabBar alloc] initWithFrame:douyinBar.bounds];
+        gDYYYTabGlassBar.delegate = gDYYYTabGlassProxy;
+        gDYYYTabGlassPlusKey = DYYYTabGlassGlassMakePlusKey(gDYYYTabGlassProxy);
+    }
+
+    // 作为子视图挂在抖音底栏内：显隐/透明度/位置全部随父视图继承。
+    if (gDYYYTabGlassBar.superview != douyinBar) [douyinBar addSubview:gDYYYTabGlassBar];
+    if (gDYYYTabGlassPlusKey.superview != douyinBar) [douyinBar addSubview:gDYYYTabGlassPlusKey];
+    // 置顶兜底——其他插件遍历底栏子视图后可能改动层级。圆键在胶囊之上。
+    if (douyinBar.subviews.lastObject != gDYYYTabGlassPlusKey) {
+        [douyinBar bringSubviewToFront:gDYYYTabGlassBar];
+        [douyinBar bringSubviewToFront:gDYYYTabGlassPlusKey];
+    }
+
+    DYYYTabGlassGlassObserveStyle(douyinBar);
+    // 监听之外再逐帧比对一次：冷启动首帧与刚挂上时都没有 trait 变化事件可等。
+    DYYYTabGlassGlassApplyStyle(douyinBar.window.windowScene.traitCollection.userInterfaceStyle);
+    // 取色排在最前：标题图按极性渲染，拍摄图标着色也要用这一步定下的极性。
+    DYYYTabGlassGlassApplyInk(DYYYTabGlassGlassInkStyleFor(buttons, (NSInteger)controller.selectedIndex, gDYYYTabGlassGlassStyle));
+    DYYYTabGlassGlassSyncItems(controller, buttons);
+    DYYYTabGlassGlassLayoutGlass(douyinBar, DYYYTabGlassGlassReferenceCount(buttons));
+    DYYYTabGlassGlassSetDouyinContentVisible(douyinBar, buttons, NO);
+    // 放在最后：可视化的环绕轮廓要用 DYYYLGGlassLayoutGlass 刚算完的胶囊与圆键几何。
+}
+
+#pragma mark - Hook
+
+%group DYYYTabGlassGlassTabBarHooks
+
+%hook AWENormalModeTabBar
+
+- (void)layoutSubviews {
+    %orig;
+    if (@available(iOS 26.0, *)) DYYYTabGlassGlassUpdate(self);
+}
+
+%end
+
+// 角标变化不一定伴随底栏重新布局（收到推送时就不会），故在抖音写入角标的两个入口上
+// 立即重跑一次同步。逐帧同步只兜稳态。
+%hook AWENormalModeTabBarGeneralButton
+
+- (id)p_showBadgeWithStyle:(unsigned long long)style count:(long long)count text:(id)text config:(id)config {
+    id result = %orig;
+    if (gDYYYTabGlassBar) DYYYTabGlassGlassSyncBadges();
+    return result;
+}
+
+- (void)hideBadge {
+    %orig;
+    if (gDYYYTabGlassBar) DYYYTabGlassGlassSyncBadges();
+}
+
+%end
+
+// 这两个子视图是其他插件改底栏内容的落点：DYYY 在 TextView 里写 label.text 改标题，
+// 在 BadgeContainerView 里把 DUXBadge 隐掉。见 DYYYLGGlassScheduleMirror。
+%hook AWENormalModeTabBarTextView
+
+- (void)layoutSubviews {
+    %orig;
+    DYYYTabGlassGlassScheduleMirror();
+}
+
+- (void)textColorChangedWithSelectedStatus:(BOOL)selected {
+    %orig;
+    DYYYTabGlassGlassScheduleMirror();
+}
+
+- (void)tabbarStatusDidChanged:(long long)status animated:(BOOL)animated {
+    %orig;
+    DYYYTabGlassGlassScheduleMirror();
+}
+
+%end
+
+%hook AWENormalModeTabBarBadgeContainerView
+
+- (void)layoutSubviews {
+    %orig;
+    DYYYTabGlassGlassScheduleMirror();
+}
+
+%end
+
+%end
+
+#pragma mark - 评论区液体玻璃（普通材质）
+
+// 移植自 DYKiller，MIT 许可见 LICENSE。
+
+// 依赖的抖音类名集中在此，抖音改名时只改这里。
+static NSString *const kDYYYCommentGlassInnerControllerClass =
+    @"AWECommentPanelContainerSwiftImpl.CommentContainerInnerViewController";
+static NSString *const kDYYYCommentGlassInputContainerClass =
+    @"AWECommentInputViewSwiftImpl.CommentInputContainerView";
+static NSString *const kDYYYCommentGlassFoldDisplayClass =
+    @"AWECommentPanelListSwiftImpl.CommentFoldDisplayView";
+
+// 输入栏底色槽的尺寸比对容差。
+static const CGFloat kDYYYCommentGlassSlotSizeTolerance = 0.5;
+// 槽位尚未写入圆角时的顶部半径下限，保证玻璃有效半径 > 0。
+static const CGFloat kDYYYCommentGlassTopRadiusFloor = 8.0;
+// 没有可复用的页面转场时，材质更换使用这个短动画。
+static const NSTimeInterval kDYYYCommentGlassGlassAnimationDuration = 0.25;
+// 满幅底色清扫的深度上限：主面板要一路走到 Cell 里（第 12 层左右）；输入栏容器最深只到表情
+// 面板的 tab 条（第 6 层），收窄一点也把表情面板展开时的遍历成本关住。判据见 DYYYLGIsCoverCandidate。
+static const NSUInteger kDYYYCommentGlassPanelCoverWalkDepth = 14;
+static const NSUInteger kDYYYCommentGlassInputCoverWalkDepth = 8;
+static const CGFloat kDYYYCommentGlassCoverMinHeight = 8.0;
+
+#pragma mark - 状态（全部挂在被改动的视图上，多个评论面板并存也互不干扰）
+
+static char kDYYYCommentGlassSlotOriginalColorKey;     // 槽位：抖音写的底色
+static char kDYYYCommentGlassSlotGlassKey;             // 槽位：我们插的玻璃层
+static char kDYYYCommentGlassCoverOriginalColorKey;    // 遮盖层：抖音写的底色
+static char kDYYYCommentGlassGlassClearModeKey;         // 玻璃：当前 effect 是否按 Clear 构造
+static char kDYYYCommentGlassGlassMaterializingKey;     // 玻璃：已排入 materialize，防止重复排队
+static char kDYYYCommentGlassFoldMaskedHiddenKey;       // 被折叠条盖住的兄弟：抖音原本的 hidden
+
+// 本次会话是否接管过槽位。开关一直关着的用户不必为每帧的查找与还原付出代价。
+static BOOL gDYYYCommentGlassEverAttached = NO;
+// 所有在场的玻璃层，供深浅色切换时统一更新。
+static NSHashTable *gDYYYCommentGlassGlassCarriers = nil;
+// 已清过底色的满幅遮盖层，关开关时还原。
+static NSHashTable *gDYYYCommentGlassClearedCovers = nil;
+// 被折叠提示条盖住、由我们代抖音藏起来的兄弟视图，关开关时还原。
+static NSHashTable *gDYYYCommentGlassFoldMaskedViews = nil;
+// 已挂上深浅色监听的场景，避免重复注册。
+static __weak UIWindowScene *gDYYYCommentGlassObservedScene = nil;
+// 拦下「不透明绘制优化」网关的次数，只给调试探针读。
+// 最近接管的面板槽位与输入框槽位，只给调试探针读。
+static __weak UIView *gDYYYCommentGlassLastPanelSlot = nil;
+// 最近接管的输入栏容器。主面板玻璃的让位判据、小表情栏的清色判据都以它那块玻璃为准。
+static __weak UIView *gDYYYCommentGlassLastInputContainer = nil;
+// 在场的小表情栏。它随键盘来去，玻璃可能比它后到，同步时补清一次。
+static __weak UIView *gDYYYCommentGlassEmoticonPanel = nil;
+// 最近同步过的评论控制器，供小表情栏那条补救路径回调同步（见 DYYYLGCommentEmoticonHook）。
+static __weak UIViewController *gDYYYCommentGlassLastController = nil;
+
+#pragma mark - 小工具
+
+static BOOL DYYYCommentGlassColorIsOpaque(UIColor *color) {
+    return color && CGColorGetAlpha(color.CGColor) >= 0.99;
+}
+
+static BOOL DYYYCommentGlassViewIsVisible(UIView *view) {
+    return view && !view.hidden && view.alpha >= 0.01;
+}
+
+// 输入栏隐藏使用透明 mask 保留点击；其后代玻璃也不再提供可见覆盖。
+static BOOL DYYYCommentGlassViewChainVisible(UIView *view) {
+    for (UIView *node = view; node; node = node.superview) {
+        if (!DYYYCommentGlassViewIsVisible(node)) return NO;
+    }
+    return YES;
+}
+
+#pragma mark - 材质与外观
+
+// 抖音的 window override 恒为浅色，真实系统外观从 UIWindowScene 取。
+static UIUserInterfaceStyle gDYYYCommentGlassGlassStyle = UIUserInterfaceStyleUnspecified;
+
+static BOOL DYYYCommentGlassColorsEqual(UIColor *lhs, UIColor *rhs) {
+    return lhs == rhs || [lhs isEqual:rhs];
+}
+
+static UIUserInterfaceStyle DYYYCommentGlassGlassStyleForView(UIView *view) {
+    UIUserInterfaceStyle style = view.window.windowScene.traitCollection.userInterfaceStyle;
+    if (style == UIUserInterfaceStyleUnspecified) style = gDYYYCommentGlassGlassStyle;
+    if (style == UIUserInterfaceStyleUnspecified) style = view.traitCollection.userInterfaceStyle;
+    return style == UIUserInterfaceStyleUnspecified ? UIUserInterfaceStyleLight : style;
+}
+
+static BOOL DYYYCommentGlassCommentGlassEnabled(void) {
+    return [DYYYUtils liquidGlassAvailable] && [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYEnableCommentBlur"];
+}
+
+static BOOL DYYYCommentGlassCommentGlassUsesClearMaterial(void) { return NO; }
+
+static UIUserInterfaceStyle DYYYCommentGlassGlassOverrideStyle(BOOL clear, UIUserInterfaceStyle style) {
+    return clear ? UIUserInterfaceStyleUnspecified : style;
+}
+
+static UIColor *DYYYCommentGlassCommentGlassTint(BOOL clear, UIUserInterfaceStyle style) {
+    return clear ? [DYYYUtils liquidGlassTintForStyle:style] : nil;
+}
+
+static UIGlassEffect *DYYYCommentGlassMakeCommentGlassEffect(BOOL clear, UIUserInterfaceStyle style)
+    API_AVAILABLE(ios(26.0)) {
+    UIGlassEffect *effect = [UIGlassEffect effectWithStyle:
+        clear ? UIGlassEffectStyleClear : UIGlassEffectStyleRegular];
+    effect.tintColor = DYYYCommentGlassCommentGlassTint(clear, style);
+    effect.interactive = YES;
+    return effect;
+}
+
+static void DYYYCommentGlassRunGlassAnimation(UIViewController *controller, BOOL animated, void (^changes)(void)) {
+    if (!changes) return;
+    if (!animated || UIAccessibilityIsReduceMotionEnabled()) {
+        [UIView performWithoutAnimation:changes];
+        return;
+    }
+
+    id<UIViewControllerTransitionCoordinator> coordinator = controller.transitionCoordinator;
+    if (coordinator && coordinator.isAnimated) {
+        BOOL accepted = [coordinator
+            animateAlongsideTransition:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) {
+                changes();
+            }
+            completion:nil];
+        if (accepted) return;
+    }
+
+    [UIView animateWithDuration:kDYYYCommentGlassGlassAnimationDuration
+                          delay:0.0
+                        options:UIViewAnimationOptionBeginFromCurrentState
+                              | UIViewAnimationOptionAllowUserInteraction
+                              | UIViewAnimationOptionCurveEaseInOut
+                     animations:changes
+                     completion:nil];
+}
+
+static void DYYYCommentGlassInstallGlassEffect(UIVisualEffectView *glass, UIGlassEffect *effect, BOOL clear)
+    API_AVAILABLE(ios(26.0)) {
+    glass.effect = effect;
+    objc_setAssociatedObject(glass, &kDYYYCommentGlassGlassClearModeKey, @(clear), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static BOOL DYYYCommentGlassGlassNeedsAppearance(UIVisualEffectView *glass, BOOL clear, UIUserInterfaceStyle style)
+    API_AVAILABLE(ios(26.0)) {
+    UIGlassEffect *current = [glass.effect isKindOfClass:UIGlassEffect.class]
+        ? (UIGlassEffect *)glass.effect : nil;
+    if (!current) return glass.effect != nil;
+
+    NSNumber *installedClear = objc_getAssociatedObject(glass, &kDYYYCommentGlassGlassClearModeKey);
+    if (!installedClear || installedClear.boolValue != clear) return YES;
+    if (!current.interactive) return YES;
+    return !DYYYCommentGlassColorsEqual(current.tintColor, DYYYCommentGlassCommentGlassTint(clear, style));
+}
+
+// 外观切换只改 overrideUserInterfaceStyle；只有 Regular/Clear 档位或 tint 真的变了才重建 effect。
+static void DYYYCommentGlassApplyGlassStyle(UIUserInterfaceStyle style, BOOL animated) API_AVAILABLE(ios(26.0)) {
+    if (style == UIUserInterfaceStyleUnspecified) return;
+    gDYYYCommentGlassGlassStyle = style;
+
+    BOOL clear = DYYYCommentGlassCommentGlassUsesClearMaterial();
+    NSArray<UIVisualEffectView *> *carriers = gDYYYCommentGlassGlassCarriers.allObjects;
+    UIUserInterfaceStyle override = DYYYCommentGlassGlassOverrideStyle(clear, style);
+
+    NSMutableArray<UIVisualEffectView *> *restyle = [NSMutableArray array];
+    for (UIVisualEffectView *glass in carriers) {
+        if (glass.overrideUserInterfaceStyle != override) {
+            glass.overrideUserInterfaceStyle = override;
+        }
+        if (glass.effect && DYYYCommentGlassGlassNeedsAppearance(glass, clear, style)) [restyle addObject:glass];
+    }
+    if (restyle.count == 0) return;
+
+    DYYYCommentGlassRunGlassAnimation(nil, animated, ^{
+        for (UIVisualEffectView *glass in restyle) {
+            DYYYCommentGlassInstallGlassEffect(glass, DYYYCommentGlassMakeCommentGlassEffect(clear, style), clear);
+        }
+    });
+}
+
+// 挂在场景上监听，系统一切深浅色即刻改；否则只能等抖音下次布局。
+static void DYYYCommentGlassObserveGlassStyle(UIView *host) API_AVAILABLE(ios(26.0)) {
+    UIWindowScene *scene = host.window.windowScene;
+    if (!scene || scene == gDYYYCommentGlassObservedScene) return;
+    gDYYYCommentGlassObservedScene = scene;
+    [scene registerForTraitChanges:@[ UITraitUserInterfaceStyle.class ]
+                       withHandler:^(UIWindowScene *changed, __unused UITraitCollection *previous) {
+        DYYYCommentGlassApplyGlassStyle(changed.traitCollection.userInterfaceStyle, YES);
+    }];
+}
+
+#pragma mark - 槽位
+
+// 槽位候选：当前带不透明底色，或底色已被我们清掉但记忆还在。
+static BOOL DYYYCommentGlassIsSlotCandidate(UIView *view) {
+    return objc_getAssociatedObject(view, &kDYYYCommentGlassSlotOriginalColorKey) != nil
+        || DYYYCommentGlassColorIsOpaque(view.backgroundColor);
+}
+
+// 整棵跳过 effect view：底色槽接管之后玻璃就挂在它里面，UIKit 那套内部视图里既有满幅的、
+// 也有带圆角的，扫进来会被当成第二个槽位。别的插件的 effect 同理，也不该往里认。
+static void DYYYCommentGlassCollectSlotCandidates(UIView *view, NSUInteger depth, NSMutableArray<UIView *> *candidates) {
+    if (depth > 4) return;
+    for (UIView *subview in view.subviews) {
+        if ([subview isKindOfClass:UIVisualEffectView.class]) continue;
+        if (DYYYCommentGlassIsSlotCandidate(subview)) [candidates addObject:subview];
+        DYYYCommentGlassCollectSlotCandidates(subview, depth + 1, candidates);
+    }
+}
+
+// 半屏与全屏复用同一个评论控制器；槽位按结构解析，认不出时不接管。
+static UIView *DYYYCommentGlassPanelSlot(UIViewController *controller) {
+    UIViewController *inner = [DYYYUtils findViewControllerOfClass:NSClassFromString(kDYYYCommentGlassInnerControllerClass) inViewController:controller];
+    return inner.isViewLoaded ? inner.view : nil;
+}
+
+static UIView *DYYYCommentGlassInputContainer(UIViewController *controller) {
+    Class containerClass = NSClassFromString(kDYYYCommentGlassInputContainerClass);
+    if (!containerClass || !controller.isViewLoaded) return nil;
+    for (UIView *subview in controller.view.subviews) {
+        if ([subview isKindOfClass:containerClass]) return subview;
+    }
+    return nil;
+}
+
+// 输入栏里只剩一个要单独接管的槽位：输入框那枚圆角胶囊。
+// 整个输入区的底（底色槽、艾特面板、表情面板）由容器那一块玻璃统一垫，见 DYYYLGSyncInputGlass。
+static UIView *DYYYCommentGlassInputFieldSlot(UIView *container) {
+    if (!container) return nil;
+
+    NSMutableArray<UIView *> *candidates = [NSMutableArray array];
+    DYYYCommentGlassCollectSlotCandidates(container, 0, candidates);
+
+    CGSize size = container.bounds.size;
+    for (UIView *candidate in candidates) {
+        // 铺满容器的是底色槽、艾特面板或表情面板，都不是胶囊——它们由容器那块玻璃统一垫。
+        CGSize candidateSize = candidate.bounds.size;
+        if (fabs(candidateSize.width - size.width) <= kDYYYCommentGlassSlotSizeTolerance) continue;
+        // 发送键之类的圆角控件也有底色，胶囊本身从来不是控件。
+        if ([candidate isKindOfClass:UIControl.class]) continue;
+        if (candidate.layer.cornerRadius > 0.0) return candidate;
+    }
+    return nil;
+}
+
+#pragma mark - 玻璃层
+
+// 玻璃要垫在抖音内容之下。其他插件遍历子视图后可能改动层级，每轮校验一次，顺序对就不动。
+static void DYYYCommentGlassEnsureBackmost(UIView *slot, UIView *glass) {
+    if (slot.subviews.firstObject == glass) return;
+    [slot insertSubview:glass atIndex:0];
+}
+
+typedef NS_ENUM(NSUInteger, DYYYCommentGlassGlassShape) {
+    // 上圆下方：主面板；顶部半径跟槽位实时 cornerRadius。
+    DYYYCommentGlassGlassShapeTopRounded = 0,
+    // 跟随槽位实时 cornerRadius：输入框那枚控件。常驻态它的半径正好是半高，本来就是胶囊。
+    DYYYCommentGlassGlassShapeField,
+    // 输入栏容器，平角：它与主面板玻璃上下拼接，顶边给圆角会在两角露出原始视频。
+    DYYYCommentGlassGlassShapeBarFlat,
+    // 输入栏容器，上圆下方：艾特 / 表情面板把输入区顶出主面板之后，顶边成了露在视频上的自由边，
+    // 原生那条盖条就是 8pt 圆角。
+    DYYYCommentGlassGlassShapeBarRounded,
+};
+
+static BOOL DYYYCommentGlassGlassShapeIsBar(DYYYCommentGlassGlassShape shape) {
+    return shape == DYYYCommentGlassGlassShapeBarFlat || shape == DYYYCommentGlassGlassShapeBarRounded;
+}
+
+static void DYYYCommentGlassSyncPanelGlassHeight(void);
+static void DYYYCommentGlassClearCoverLayers(UIView *slot, NSUInteger maxDepth);
+
+@implementation DYYYCommentGlassCommentBarGlassView
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    DYYYCommentGlassSyncPanelGlassHeight();
+
+    // 尺寸变了 = 输入区换了形态（艾特面板 / 表情面板出现或收起）。新露出来的那一块若在玻璃
+    // 出现**之前**就被抖音画过底色，取色口那道拦截赶不上，按形态变化补扫一次。
+    // 只认尺寸变化：layoutSubviews 本身可能被调很多次，而形态切换一共就那么几次。
+    CGSize size = self.bounds.size;
+    if (CGSizeEqualToSize(size, _dkSweptSize)) return;
+    _dkSweptSize = size;
+    DYYYCommentGlassClearCoverLayers(self.superview, kDYYYCommentGlassInputCoverWalkDepth);
+}
+
+@end
+
+// 先以 nil effect 建好视图；挂上视图树并完成几何后再走系统 materialize。
+// 用 DYYYGlassFlexView 而不是裸 UIVisualEffectView：它多一条触摸源重定向，除此之外行为一致。
+static UIVisualEffectView *DYYYCommentGlassMakeGlassShell(DYYYCommentGlassGlassShape shape) API_AVAILABLE(ios(26.0)) {
+    Class shellClass = DYYYCommentGlassGlassShapeIsBar(shape) ? DYYYCommentGlassCommentBarGlassView.class : DYYYGlassFlexView.class;
+    DYYYGlassFlexView *glass = [[shellClass alloc] initWithEffect:nil];
+    glass.userInteractionEnabled = NO;
+    glass.alpha = 1.0;
+    // 输入框与输入栏都会在常驻态与回复态之间改变尺寸；交给 UIKit 按槽位 bounds 自动跟随。
+    glass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    return glass;
+}
+
+// 顶部：同心圆角 + 槽位实时半径作下限，保证折射与高光所需的有效圆角。
+// 胶囊：系统 capsuleConfiguration，正方形/扁矩形上都保证有效圆角 > 0。
+static void DYYYCommentGlassApplyGlassShape(UIVisualEffectView *glass, UIView *slot, DYYYCommentGlassGlassShape shape)
+    API_AVAILABLE(ios(26.0)) {
+    // cornerConfiguration 是 nonnull，且形状会在 BarFlat / BarRounded 之间来回切，
+    // 必须显式写回 0 半径，不能留着上一次的圆角。
+    if (shape == DYYYCommentGlassGlassShapeBarFlat) {
+        glass.cornerConfiguration =
+            [UICornerConfiguration configurationWithUniformRadius:[UICornerRadius fixedRadius:0.0]];
+        return;
+    }
+    // 输入框：跟随抖音写在槽位上的圆角，不写死 capsule。抖音恒写 18——常驻 36pt 高时它等于半高、
+    // 观感就是胶囊；加图或多行涨到 124pt 时它是圆角矩形。而文字与图片缩略图是槽位的**兄弟视图**，
+    // 画在玻璃上面、不受槽位裁剪，写死 capsule 会把两侧收进 62pt，把它们甩到玻璃外面。
+    if (shape == DYYYCommentGlassGlassShapeField) {
+        CGFloat radius = slot.layer.cornerRadius;
+        glass.cornerConfiguration = radius > 0.0
+            ? [UICornerConfiguration configurationWithUniformRadius:[UICornerRadius fixedRadius:radius]]
+            : [UICornerConfiguration capsuleConfiguration];
+        return;
+    }
+
+    CGFloat floor = slot.layer.cornerRadius;
+    if (floor <= 0.0) floor = kDYYYCommentGlassTopRadiusFloor;
+    UICornerRadius *top = [UICornerRadius containerConcentricRadiusWithMinimum:floor];
+    glass.cornerConfiguration =
+        [UICornerConfiguration configurationWithUniformTopRadius:top
+                                                bottomLeftRadius:nil
+                                               bottomRightRadius:nil];
+}
+
+// 仅在 effect 仍为 nil 时写入，让系统 materialize 动画跑一次。
+static void DYYYCommentGlassMaterializeGlass(UIVisualEffectView *glass, UIViewController *controller)
+    API_AVAILABLE(ios(26.0)) {
+    if (!glass || glass.effect || [objc_getAssociatedObject(glass, &kDYYYCommentGlassGlassMaterializingKey) boolValue]) return;
+    objc_setAssociatedObject(glass, &kDYYYCommentGlassGlassMaterializingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    DYYYCommentGlassRunGlassAnimation(controller, YES, ^{
+        if (!glass.superview || !DYYYCommentGlassCommentGlassEnabled()) {
+            objc_setAssociatedObject(glass, &kDYYYCommentGlassGlassMaterializingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            return;
+        }
+
+        UIUserInterfaceStyle style = gDYYYCommentGlassGlassStyle;
+        if (style == UIUserInterfaceStyleUnspecified) style = DYYYCommentGlassGlassStyleForView(glass);
+        BOOL clear = DYYYCommentGlassCommentGlassUsesClearMaterial();
+        glass.overrideUserInterfaceStyle = DYYYCommentGlassGlassOverrideStyle(clear, style);
+        DYYYCommentGlassInstallGlassEffect(glass, DYYYCommentGlassMakeCommentGlassEffect(clear, style), clear);
+        objc_setAssociatedObject(glass, &kDYYYCommentGlassGlassMaterializingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        // 让位判据要求输入栏玻璃已写入 effect，而 effect 是在几何之后才写的（转场协调器那条路
+        // 还会推迟到转场里）。这里补算一次，主面板才不会一直停在满幅、与输入栏叠成一块台阶。
+        DYYYCommentGlassSyncPanelGlassHeight();
+    });
+}
+
+// 记下并清掉槽位的不透明底色。返回 NO 表示这个槽位不该接管——它本来就没有底色。
+static BOOL DYYYCommentGlassClearSlotColor(UIView *slot) {
+    if (objc_getAssociatedObject(slot, &kDYYYCommentGlassSlotOriginalColorKey)) {
+        if (DYYYCommentGlassColorIsOpaque(slot.backgroundColor)) slot.backgroundColor = UIColor.clearColor;
+        return YES;
+    }
+    UIColor *current = slot.backgroundColor;
+    if (!DYYYCommentGlassColorIsOpaque(current)) return NO;
+    objc_setAssociatedObject(slot, &kDYYYCommentGlassSlotOriginalColorKey, current, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    slot.backgroundColor = UIColor.clearColor;
+    gDYYYCommentGlassEverAttached = YES;
+    return YES;
+}
+
+static Class DYYYCommentGlassFoldDisplayClass(void) {
+    static Class cls = Nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cls = NSClassFromString(kDYYYCommentGlassFoldDisplayClass); });
+    return cls;
+}
+
+static BOOL DYYYCommentGlassIsCoverCandidate(UIView *view, UIView *slot) {
+    if (!view || view == slot) return NO;
+    if (view.hidden || view.alpha < 0.01) return NO;
+    if ([view isKindOfClass:UILabel.class]
+        || [view isKindOfClass:UIControl.class]
+        || [view isKindOfClass:UIImageView.class]) {
+        return NO;
+    }
+    if (!DYYYCommentGlassColorIsOpaque(view.backgroundColor)) return NO;
+    if (fabs(CGRectGetWidth(view.bounds) - CGRectGetWidth(slot.bounds)) > 1.0) return NO;
+    return CGRectGetHeight(view.bounds) >= kDYYYCommentGlassCoverMinHeight;
+}
+
+static void DYYYCommentGlassClearCoverColor(UIView *view) {
+    if (objc_getAssociatedObject(view, &kDYYYCommentGlassCoverOriginalColorKey)) {
+        if (DYYYCommentGlassColorIsOpaque(view.backgroundColor)) view.backgroundColor = UIColor.clearColor;
+        return;
+    }
+    if (!DYYYCommentGlassColorIsOpaque(view.backgroundColor)) return;
+    objc_setAssociatedObject(view, &kDYYYCommentGlassCoverOriginalColorKey,
+                             view.backgroundColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [gDYYYCommentGlassClearedCovers addObject:view];
+    view.backgroundColor = UIColor.clearColor;
+}
+
+static void DYYYCommentGlassWalkClearCovers(UIView *view, UIView *slot, NSUInteger depth, NSUInteger maxDepth) {
+    if (depth > maxDepth) return;
+    for (UIView *sub in view.subviews) {
+        if ([sub isKindOfClass:UIVisualEffectView.class]) continue;
+        if (DYYYCommentGlassIsCoverCandidate(sub, slot)) DYYYCommentGlassClearCoverColor(sub);
+        if ([sub isKindOfClass:UILabel.class] || [sub isKindOfClass:UIImageView.class]) continue;
+        DYYYCommentGlassWalkClearCovers(sub, slot, depth + 1, maxDepth);
+    }
+}
+
+static void DYYYCommentGlassClearCoverLayers(UIView *slot, NSUInteger maxDepth) {
+    if (!slot) return;
+    DYYYCommentGlassWalkClearCovers(slot, slot, 0, maxDepth);
+}
+
+static void DYYYCommentGlassRestoreCoverColor(UIView *view) {
+    UIColor *original = objc_getAssociatedObject(view, &kDYYYCommentGlassCoverOriginalColorKey);
+    if (!original) return;
+    objc_setAssociatedObject(view, &kDYYYCommentGlassCoverOriginalColorKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    view.backgroundColor = original;
+}
+
+static void DYYYCommentGlassRestoreAllCovers(void) {
+    NSArray<UIView *> *views = gDYYYCommentGlassClearedCovers.allObjects;
+    [gDYYYCommentGlassClearedCovers removeAllObjects];
+    for (UIView *view in views) DYYYCommentGlassRestoreCoverColor(view);
+}
+
+// 接管一个槽位：清掉它的不透明底色，在最底层插一层玻璃壳。
+// requireOpaque：输入框胶囊必须本来有底色；主面板槽位按类名认定，底色透明也要挂。
+// 返回 nil 表示这个槽位不该接管——已被别的插件插了玻璃，或（输入框）没有底色。
+static UIView *DYYYCommentGlassAttachGlass(UIView *slot, DYYYCommentGlassGlassShape shape, BOOL requireOpaque)
+    API_AVAILABLE(ios(26.0)) {
+    UIView *glass = objc_getAssociatedObject(slot, &kDYYYCommentGlassSlotGlassKey);
+    // 退让只在尚未接管时判定；接管之后层级由 DYYYLGEnsureBackmost 维持，不能再据此退出。
+    if (!glass && [slot.subviews.firstObject isKindOfClass:UIVisualEffectView.class]) return nil;
+
+    BOOL cleared = DYYYCommentGlassClearSlotColor(slot);
+    if (requireOpaque && !cleared) return nil;
+
+    if (!glass) {
+        glass = DYYYCommentGlassMakeGlassShell(shape);
+        objc_setAssociatedObject(slot, &kDYYYCommentGlassSlotGlassKey, glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [gDYYYCommentGlassGlassCarriers addObject:glass];
+        gDYYYCommentGlassEverAttached = YES;
+    }
+
+    // 槽位作为触摸源时包含它的整棵子树，面板列表与输入控件都不必单独枚举。
+    ((DYYYGlassFlexView *)glass).flexSourceView = slot;
+    DYYYCommentGlassApplyGlassShape((UIVisualEffectView *)glass, slot, shape);
+    return glass;
+}
+
+static void DYYYCommentGlassDetachGlass(UIView *slot) {
+    UIView *glass = objc_getAssociatedObject(slot, &kDYYYCommentGlassSlotGlassKey);
+    UIColor *original = objc_getAssociatedObject(slot, &kDYYYCommentGlassSlotOriginalColorKey);
+    if (!glass && !original) return;
+
+    [glass removeFromSuperview];
+    if (original) slot.backgroundColor = original;
+
+    objc_setAssociatedObject(slot, &kDYYYCommentGlassSlotOriginalColorKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(slot, &kDYYYCommentGlassSlotGlassKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+#pragma mark - 让位
+
+// 输入栏那块玻璃在不在场、是不是真的在渲染。effect 是几何之后才写的，所以没写入就还不算数。
+static UIVisualEffectView *DYYYCommentGlassUsableInputGlass(void) {
+    UIVisualEffectView *glass = objc_getAssociatedObject(gDYYYCommentGlassLastInputContainer, &kDYYYCommentGlassSlotGlassKey);
+    if (!glass || !glass.effect || !glass.window || !DYYYCommentGlassViewChainVisible(glass)) return nil;
+    return glass;
+}
+
+// 输入栏那块玻璃是否**确实**盖住了槽位某条横线以下的整段。除了「在渲染」，还要与槽位同属一个
+// 评论控制器、同窗口、满宽、底边到槽位底边。任一条不成立就当没盖住。
+// gLastInputContainer 是「最近一个」，同源判定挡住另一个面板的残留。
+static BOOL DYYYCommentGlassInputGlassCoverage(UIView *slot, CGFloat *coverTop) {
+    UIVisualEffectView *glass = DYYYCommentGlassUsableInputGlass();
+    if (!glass || !slot.window || glass.window != slot.window) return NO;
+    if (!slot.superview || ![gDYYYCommentGlassLastInputContainer isDescendantOfView:slot.superview]) return NO;
+
+    CGRect cover = [glass convertRect:glass.bounds toView:slot];
+    CGSize size = slot.bounds.size;
+    if (CGRectGetMinX(cover) > 0.5 || CGRectGetMaxX(cover) < size.width - 0.5) return NO;
+    if (CGRectGetMaxY(cover) < size.height - 0.5) return NO;
+
+    // 可以是负的：艾特 / 表情面板把输入区顶出主面板之后，容器顶边高过槽位顶边，
+    // 等于整个槽位都被盖住。调用方据此把主面板玻璃整块收起来。
+    *coverTop = CGRectGetMinY(cover);
+    return YES;
+}
+
+static void DYYYCommentGlassSyncPanelGlassHeight(void) {
+    UIView *slot = gDYYYCommentGlassLastPanelSlot;
+    UIVisualEffectView *glass = objc_getAssociatedObject(slot, &kDYYYCommentGlassSlotGlassKey);
+    if (!glass || !DYYYCommentGlassCommentGlassEnabled()) return;
+
+    CGFloat coverTop = 0.0;
+    BOOL covered = DYYYCommentGlassInputGlassCoverage(slot, &coverTop);
+    // 输入区盖到了槽位顶边之上（艾特 / 表情面板那种形态）：整块收起来。用 hidden 而不是把高度
+    // 压成 0——零尺寸的 UIGlassEffect 建不出材质层，之后再撑大也补不回来
+    // （见 docs/share-panel-liquid-glass.md 的 beta4 一节）。
+    BOOL entirelyCovered = covered && coverTop <= 0.5;
+    if (glass.hidden != entirelyCovered) glass.hidden = entirelyCovered;
+    if (entirelyCovered) return;
+
+    CGRect target = slot.bounds;
+    if (covered) target.size.height = coverTop;
+    if (!CGRectEqualToRect(glass.frame, target)) glass.frame = target;
+}
+
+#pragma mark - 折叠提示条
+
+static const NSUInteger kDYYYCommentGlassFoldWalkDepth = 3;
+
+static BOOL DYYYCommentGlassFoldRowActive(UIView *fold) {
+    if (!DYYYCommentGlassViewIsVisible(fold)) return NO;
+    // 底色被我们清过之后就只剩记忆可认，两者取其一。
+    return DYYYCommentGlassColorIsOpaque(fold.backgroundColor)
+        || objc_getAssociatedObject(fold, &kDYYYCommentGlassCoverOriginalColorKey) != nil;
+}
+
+static void DYYYCommentGlassUnmaskFoldSibling(UIView *view) {
+    NSNumber *original = objc_getAssociatedObject(view, &kDYYYCommentGlassFoldMaskedHiddenKey);
+    if (!original) return;
+    objc_setAssociatedObject(view, &kDYYYCommentGlassFoldMaskedHiddenKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [gDYYYCommentGlassFoldMaskedViews removeObject:view];
+    view.hidden = original.boolValue;
+}
+
+static void DYYYCommentGlassRestoreAllFoldMasks(void) {
+    NSArray<UIView *> *views = gDYYYCommentGlassFoldMaskedViews.allObjects;
+    for (UIView *view in views) DYYYCommentGlassUnmaskFoldSibling(view);
+    [gDYYYCommentGlassFoldMaskedViews removeAllObjects];
+}
+
+// 收敛一条折叠提示条：亮着就清底色 + 藏被它完整罩住的可见兄弟，灭了就原样放回去。
+// 「完整罩住」而不是「相交」——头像在左、点赞与不喜欢在右、昵称在上、正文比它宽，都不会命中。
+static void DYYYCommentGlassSyncFoldRow(UIView *fold) {
+    UIView *parent = fold.superview;
+    if (!parent) return;
+
+    if (!DYYYCommentGlassFoldRowActive(fold)) {
+
+        for (UIView *sibling in parent.subviews) DYYYCommentGlassUnmaskFoldSibling(sibling);
+        return;
+    }
+
+    DYYYCommentGlassClearCoverColor(fold);
+    CGRect covered = fold.frame;
+    for (UIView *sibling in parent.subviews) {
+        if (sibling == fold) continue;
+        if (objc_getAssociatedObject(sibling, &kDYYYCommentGlassFoldMaskedHiddenKey)) continue;
+        if (sibling.hidden || !CGRectContainsRect(covered, sibling.frame)) continue;
+        objc_setAssociatedObject(sibling, &kDYYYCommentGlassFoldMaskedHiddenKey, @(sibling.hidden),
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [gDYYYCommentGlassFoldMaskedViews addObject:sibling];
+        sibling.hidden = YES;
+    }
+}
+
+static void DYYYCommentGlassSyncFoldRowsIn(UIView *view, Class foldClass, NSUInteger depth) {
+    if (depth > kDYYYCommentGlassFoldWalkDepth) return;
+    for (UIView *sub in view.subviews) {
+        if ([sub isKindOfClass:foldClass]) {
+            DYYYCommentGlassSyncFoldRow(sub);
+            continue;
+        }
+        if ([sub isKindOfClass:UILabel.class] || [sub isKindOfClass:UIImageView.class]) continue;
+        DYYYCommentGlassSyncFoldRowsIn(sub, foldClass, depth + 1);
+    }
+}
+
+#pragma mark - 小表情栏
+
+static void DYYYCommentGlassApplyEmoticonPanel(void) {
+    UIView *panel = gDYYYCommentGlassEmoticonPanel;
+    if (!panel || !panel.window || !DYYYCommentGlassCommentGlassEnabled()) return;
+
+    UIVisualEffectView *glass = DYYYCommentGlassUsableInputGlass();
+    if (!glass) return;
+
+    // 两个窗口都是满屏同原点，各自的窗口坐标可以直接比。
+    CGRect panelRect = [panel convertRect:panel.bounds toView:nil];
+    CGRect glassRect = [glass convertRect:glass.bounds toView:nil];
+    if (!CGRectContainsRect(CGRectInset(glassRect, -0.5, -0.5), panelRect)) return;
+
+    DYYYCommentGlassClearCoverColor(panel);
+}
+
+#pragma mark - 同步
+
+static void DYYYCommentGlassSyncInputGlass(UIView *container) API_AVAILABLE(ios(26.0)) {
+    if (!DYYYCommentGlassViewIsVisible(container)) return;
+
+    // 顶边露在主面板槽位之上时它是压在视频上的自由边，按原生那条盖条给 8pt 圆角；
+    // 贴着主面板玻璃时必须平角——给了圆角会在两角露出原始视频。
+    UIView *panel = gDYYYCommentGlassLastPanelSlot;
+    BOOL freeTopEdge = panel.window == container.window
+        && [container convertPoint:CGPointZero toView:panel].y < -0.5;
+    DYYYCommentGlassGlassShape shape = freeTopEdge ? DYYYCommentGlassGlassShapeBarRounded : DYYYCommentGlassGlassShapeBarFlat;
+
+    UIVisualEffectView *barGlass = (UIVisualEffectView *)DYYYCommentGlassAttachGlass(container, shape, NO);
+    if (barGlass) {
+        gDYYYCommentGlassLastInputContainer = container;
+        // 触摸源取容器自己：工具栏按钮、发送键、艾特头像都在它的子树里。
+        ((DYYYGlassFlexView *)barGlass).flexSourceView = container;
+        if (!CGRectEqualToRect(barGlass.frame, container.bounds)) {
+            barGlass.frame = container.bounds;
+        }
+        DYYYCommentGlassEnsureBackmost(container, barGlass);
+        DYYYCommentGlassClearCoverLayers(container, kDYYYCommentGlassInputCoverWalkDepth);
+    }
+
+    UIView *field = DYYYCommentGlassInputFieldSlot(container);
+    if (!field) return;
+
+    // 输入框不用 UIGlassContainerEffect：嵌套会被合并成同一形状。
+    UIVisualEffectView *glass = (UIVisualEffectView *)DYYYCommentGlassAttachGlass(field, DYYYCommentGlassGlassShapeField, YES);
+    if (!glass) return;
+    if (!CGRectEqualToRect(glass.frame, field.bounds)) glass.frame = field.bounds;
+    DYYYCommentGlassEnsureBackmost(field, glass);
+}
+
+static void DYYYCommentGlassMaterializeSlotGlass(UIView *slot, UIViewController *controller) API_AVAILABLE(ios(26.0)) {
+    if (!slot) return;
+    UIVisualEffectView *glass = objc_getAssociatedObject(slot, &kDYYYCommentGlassSlotGlassKey);
+    if (glass) DYYYCommentGlassMaterializeGlass(glass, controller);
+}
+
+static void DYYYCommentGlassCommentGlassSync(UIViewController *controller) API_AVAILABLE(ios(26.0)) {
+    BOOL enabled = DYYYCommentGlassCommentGlassEnabled();
+    if (!enabled && !gDYYYCommentGlassEverAttached) return;
+
+    UIView *panel = DYYYCommentGlassPanelSlot(controller);
+    if (!panel) return;
+
+    UIView *inputContainer = DYYYCommentGlassInputContainer(controller);
+
+    if (!enabled) {
+        // 还原一次即收敛：槽位记忆清空后，后续布局只剩几次空查找。
+        // 玻璃可能正处在「整块被盖住」的隐藏态，DYYYLGDetachGlass 直接把它摘掉，不必先复位。
+        DYYYCommentGlassDetachGlass(panel);
+        DYYYCommentGlassDetachGlass(inputContainer);
+        DYYYCommentGlassDetachGlass(DYYYCommentGlassInputFieldSlot(inputContainer));
+        DYYYCommentGlassRestoreAllCovers();
+        DYYYCommentGlassRestoreAllFoldMasks();
+        return;
+    }
+
+    DYYYCommentGlassObserveGlassStyle(panel);
+    UIUserInterfaceStyle style = DYYYCommentGlassGlassStyleForView(panel);
+
+    // 本函数可能落在抖音的布局或键盘动画里，隐式动画会让玻璃几何拖在内容后面。
+    // materialize 在几何就位后单独执行，不受这个 CATransaction 影响。
+    UIVisualEffectView *panelGlass = nil;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+
+    panelGlass = (UIVisualEffectView *)DYYYCommentGlassAttachGlass(panel, DYYYCommentGlassGlassShapeTopRounded, NO);
+    if (panelGlass) {
+        gDYYYCommentGlassLastPanelSlot = panel;
+        gDYYYCommentGlassLastController = controller;
+
+        DYYYCommentGlassEnsureBackmost(panel, panelGlass);
+        DYYYCommentGlassClearCoverLayers(panel, kDYYYCommentGlassPanelCoverWalkDepth);
+
+        // 先摆输入栏，再按它实际盖住的那一段给主面板玻璃定高。
+        DYYYCommentGlassSyncInputGlass(inputContainer);
+        DYYYCommentGlassSyncPanelGlassHeight();
+    }
+
+    [CATransaction commit];
+
+    // 几何就位后统一更新已存在的材质，再让新玻璃从 nil → effect materialize。
+    if (panelGlass) {
+        DYYYCommentGlassApplyGlassStyle(style, YES);
+        DYYYCommentGlassMaterializeGlass(panelGlass, controller);
+        if (DYYYCommentGlassViewIsVisible(inputContainer)) {
+            DYYYCommentGlassMaterializeSlotGlass(inputContainer, controller);
+            DYYYCommentGlassMaterializeSlotGlass(DYYYCommentGlassInputFieldSlot(inputContainer), controller);
+        }
+        DYYYCommentGlassApplyEmoticonPanel();
+    }
+}
+
+#pragma mark - Hook
+
+// DYYYLGCommentBottomBar.xm 也在这两个方法上挂了一层（底栏抑制），两处分属两个功能、各有各的开关，
+// 本文件这一层还整体受 iOS 26 可用性约束。多层 %hook 会正常串联，两条同时生效。
+%group DYYYCommentGlassCommentGlassHooks
+
+%hook AWECommentContainerViewController
+
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    if (@available(iOS 26.0, *)) DYYYCommentGlassCommentGlassSync(self);
+}
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    if (@available(iOS 26.0, *)) DYYYCommentGlassCommentGlassSync(self);
+}
+
+%end
+
+%hook UIView
+
+- (void)setBackgroundColor:(UIColor *)color {
+    if ((objc_getAssociatedObject(self, &kDYYYCommentGlassCoverOriginalColorKey)
+         || objc_getAssociatedObject(self, &kDYYYCommentGlassSlotOriginalColorKey))
+        && DYYYCommentGlassColorIsOpaque(color)) {
+        %orig(UIColor.clearColor);
+        return;
+    }
+    %orig;
+}
+
+%end
+
+%end
+
+// 小表情栏随键盘来去，且不在评论控制器的视图树里——遍历找不到它，只能按类名挂钩。
+// 玻璃可能比它后到，所以 DYYYLGCommentGlassSync 末尾也补一次（弱引用记住这一块）。
+%group DYYYCommentGlassCommentEmoticonHook
+
+%hook AWECommentMiniEmoticonPanelView
+
+- (void)layoutSubviews {
+    %orig;
+    gDYYYCommentGlassEmoticonPanel = self;
+    if (@available(iOS 26.0, *)) {
+        DYYYCommentGlassApplyEmoticonPanel();
+
+        if (!DYYYCommentGlassUsableInputGlass() && gDYYYCommentGlassLastController) DYYYCommentGlassCommentGlassSync(gDYYYCommentGlassLastController);
+    }
+}
+
+%end
+
+%end
+
+// 折叠提示条的收敛必须在布局落定之后算（判据是矩形包含），而折叠这件事本身就会把 Cell 从
+// 86 压到 58、**必然触发列表重新布局**——触发条件与要修的现象是同一件事，不存在错过。
+// 复用、滚动、缩放全屏半屏走的也是这一条；收敛幂等，来回切自愈。
+%group DYYYCommentGlassCommentFoldHook
+
+%hook AWEListKitMagicCollectionView
+
+- (void)layoutSubviews {
+    %orig;
+    if (!DYYYCommentGlassCommentGlassEnabled()) return;
+    Class foldClass = DYYYCommentGlassFoldDisplayClass();
+    if (!foldClass) return;
+    DYYYCommentGlassSyncFoldRowsIn(self, foldClass, 0);
+}
+
+%end
+
+%end
+
+%group DYYYCommentGlassCommentSearchPanelHook
+
+%hook AWECommentSearchViewController
+
+- (id)obtainPanelColor {
+    // 判据只问「输入区玻璃此刻在不在屏」，**不问自己在不在那棵树里**：这几个取色点是懒加载
+    // getter，第一次调用时 view 还没挂进输入容器，用层级判定会在冷启动首次原样返回白色，
+    // 正是要修的那个洞。艾特面板只为评论输入而生，输入区玻璃亮着时它就是被我们垫着的那块。
+    return DYYYCommentGlassCommentGlassEnabled() && DYYYCommentGlassUsableInputGlass() ? UIColor.clearColor : %orig;
+}
+
+%end
+
+%end
+
+%group DYYYCommentGlassCommentRenderOptimizeHook
+
+%hook AWECommentABTestSettings
+
++ (BOOL)enableCommentRenderingOptimize:(id)context {
+    if (DYYYCommentGlassCommentGlassEnabled()) {
+        return NO;
+    }
+    return %orig;
+}
+
+%end
+
+%end
+
+#pragma mark - 通知栏液体玻璃（通透）
+
+// 移植自 DYKiller，MIT 许可见 LICENSE。
+
+static const NSTimeInterval kDYYYNotificationGlassNotiGlassAnimation = 0.25;
+static const CGFloat kDYYYNotificationGlassNotiNativeCorner = 12.0;
+static NSString *const kDYYYNotificationGlassNotiHintPrefix = @"私信了你";
+
+static char kDYYYNotificationGlassSlotColorKey;
+static char kDYYYNotificationGlassSlotGlassKey;
+static char kDYYYNotificationGlassSlotMarkedKey;
+static char kDYYYNotificationGlassGlassClearKey;
+static char kDYYYNotificationGlassGlassStyleKey;
+static char kDYYYNotificationGlassGlassMaterializingKey;
+static char kDYYYNotificationGlassCornerRadiusKey;
+static char kDYYYNotificationGlassCornerConfigKey;
+static char kDYYYNotificationGlassActionConfigKey;
+static char kDYYYNotificationGlassActionColorKey;
+static char kDYYYNotificationGlassActionTitleKey;
+static char kDYYYNotificationGlassActionAttrTitleKey;
+static char kDYYYNotificationGlassActionForegroundKey;
+static char kDYYYNotificationGlassActionClearKey;
+static char kDYYYNotificationGlassBadgeColorKey;
+static char kDYYYNotificationGlassBadgeGlassKey;
+static char kDYYYNotificationGlassHintHiddenKey;
+
+static NSHashTable *gDYYYNotificationGlassGlassCarriers;
+static NSHashTable<AWEInnerNotificationContainerView *> *gDYYYNotificationGlassContainers;
+static NSHashTable<AWEInnerPushCommonView *> *gDYYYNotificationGlassCommonViews;
+static BOOL gDYYYNotificationGlassEverAttached = NO;
+// 我们自己写 textColor 会再次触发 setTextColor: 钩子，用它挡住重入。
+static BOOL gDYYYNotificationGlassInkReapplying = NO;
+static __weak UIWindowScene *gDYYYNotificationGlassObservedScene = nil;
+static UIUserInterfaceStyle gDYYYNotificationGlassGlassStyle = UIUserInterfaceStyleUnspecified;
+
+#pragma mark - 开关与材质
+
+static BOOL DYYYNotificationGlassNotiEnabled(void) {
+    return [DYYYUtils liquidGlassAvailable] && [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYEnableNotificationTransparency"];
+}
+
+static BOOL DYYYNotificationGlassNotiUsesClear(void) { return YES; }
+
+// 未写过键时保持胶囊（100），与 beta7 观感一致。
+static CGFloat DYYYNotificationGlassNotiCornerProgress(void) { return 1.0; }
+
+static BOOL DYYYNotificationGlassNotiColorOpaque(UIColor *color) {
+    return color && CGColorGetAlpha(color.CGColor) >= 0.99;
+}
+
+static UIUserInterfaceStyle DYYYNotificationGlassNotiStyleForView(UIView *view) {
+    UIUserInterfaceStyle style = view.window.windowScene.traitCollection.userInterfaceStyle;
+    if (style == UIUserInterfaceStyleUnspecified) style = gDYYYNotificationGlassGlassStyle;
+    if (style == UIUserInterfaceStyleUnspecified) style = view.traitCollection.userInterfaceStyle;
+    return style == UIUserInterfaceStyleUnspecified ? UIUserInterfaceStyleLight : style;
+}
+
+static UIUserInterfaceStyle DYYYNotificationGlassNotiOverrideStyle(BOOL clear, UIUserInterfaceStyle style) {
+    return clear ? UIUserInterfaceStyleUnspecified : style;
+}
+
+static UIColor *DYYYNotificationGlassNotiTint(BOOL clear, UIUserInterfaceStyle style) {
+    return clear ? [DYYYUtils liquidGlassTintForStyle:style] : nil;
+}
+
+static UIGlassEffect *DYYYNotificationGlassNotiMakeEffect(BOOL clear, UIUserInterfaceStyle style)
+    API_AVAILABLE(ios(26.0)) {
+    UIGlassEffect *effect = [UIGlassEffect effectWithStyle:
+        clear ? UIGlassEffectStyleClear : UIGlassEffectStyleRegular];
+    effect.tintColor = DYYYNotificationGlassNotiTint(clear, style);
+    effect.interactive = YES;
+    return effect;
+}
+
+static void DYYYNotificationGlassNotiRunAnimation(BOOL animated, void (^changes)(void)) {
+    if (!changes) return;
+    if (!animated || UIAccessibilityIsReduceMotionEnabled()) {
+        [UIView performWithoutAnimation:changes];
+        return;
+    }
+    [UIView animateWithDuration:kDYYYNotificationGlassNotiGlassAnimation
+                          delay:0.0
+                        options:UIViewAnimationOptionBeginFromCurrentState
+                              | UIViewAnimationOptionAllowUserInteraction
+                              | UIViewAnimationOptionCurveEaseInOut
+                     animations:changes
+                     completion:nil];
+}
+
+static void DYYYNotificationGlassNotiInstallEffect(UIVisualEffectView *glass, BOOL clear, UIUserInterfaceStyle style)
+    API_AVAILABLE(ios(26.0)) {
+    glass.effect = DYYYNotificationGlassNotiMakeEffect(clear, style);
+    objc_setAssociatedObject(glass, &kDYYYNotificationGlassGlassClearKey, @(clear), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(glass, &kDYYYNotificationGlassGlassStyleKey, @(style), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static BOOL DYYYNotificationGlassNotiGlassNeedsUpdate(UIVisualEffectView *glass, BOOL clear, UIUserInterfaceStyle style)
+    API_AVAILABLE(ios(26.0)) {
+    if (glass.overrideUserInterfaceStyle != DYYYNotificationGlassNotiOverrideStyle(clear, style)) return YES;
+    UIGlassEffect *current = [glass.effect isKindOfClass:UIGlassEffect.class]
+        ? (UIGlassEffect *)glass.effect : nil;
+    if (!current) return glass.effect != nil;
+    NSNumber *installedClear = objc_getAssociatedObject(glass, &kDYYYNotificationGlassGlassClearKey);
+    NSNumber *installedStyle = objc_getAssociatedObject(glass, &kDYYYNotificationGlassGlassStyleKey);
+    if (!installedClear || installedClear.boolValue != clear) return YES;
+    if (!installedStyle || installedStyle.integerValue != style) return YES;
+    if (!current.interactive) return YES;
+    UIColor *want = DYYYNotificationGlassNotiTint(clear, style);
+    return !((current.tintColor == want) || [current.tintColor isEqual:want]);
+}
+
+static UIView *DYYYNotificationGlassNotiSlot(AWEInnerNotificationContainerView *container);
+
+static void DYYYNotificationGlassNotiApplyStyle(UIUserInterfaceStyle style, BOOL animated) API_AVAILABLE(ios(26.0)) {
+    if (style == UIUserInterfaceStyleUnspecified) return;
+    gDYYYNotificationGlassGlassStyle = style;
+    // 场景 trait 回调在关开关后仍会来，这里不能再往回写。
+    if (!DYYYNotificationGlassNotiEnabled()) return;
+    BOOL clear = DYYYNotificationGlassNotiUsesClear();
+
+    // 深浅切换时横幅可能正在场，文字要跟着材质一起换。
+    for (AWEInnerPushCommonView *common in gDYYYNotificationGlassCommonViews.allObjects) {
+        [DYYYUtils applyLiquidGlassInkText:common clear:clear style:style];
+    }
+    for (AWEInnerNotificationContainerView *container in gDYYYNotificationGlassContainers.allObjects) {
+        [DYYYUtils applyLiquidGlassInkText:DYYYNotificationGlassNotiSlot(container) clear:clear style:style];
+    }
+
+    BOOL needs = NO;
+    for (UIVisualEffectView *glass in gDYYYNotificationGlassGlassCarriers.allObjects) {
+        if (DYYYNotificationGlassNotiGlassNeedsUpdate(glass, clear, style)) {
+            needs = YES;
+            break;
+        }
+    }
+    if (!needs) return;
+
+    DYYYNotificationGlassNotiRunAnimation(animated, ^{
+        for (UIVisualEffectView *glass in gDYYYNotificationGlassGlassCarriers.allObjects) {
+            glass.overrideUserInterfaceStyle = DYYYNotificationGlassNotiOverrideStyle(clear, style);
+            if (!glass.effect || !DYYYNotificationGlassNotiGlassNeedsUpdate(glass, clear, style)) continue;
+            DYYYNotificationGlassNotiInstallEffect(glass, clear, style);
+        }
+    });
+}
+
+static void DYYYNotificationGlassNotiObserveStyle(UIView *host) API_AVAILABLE(ios(26.0)) {
+    UIWindowScene *scene = host.window.windowScene;
+    if (!scene || scene == gDYYYNotificationGlassObservedScene) return;
+    gDYYYNotificationGlassObservedScene = scene;
+    [scene registerForTraitChanges:@[ UITraitUserInterfaceStyle.class ]
+                       withHandler:^(UIWindowScene *changed, __unused UITraitCollection *previous) {
+        DYYYNotificationGlassNotiApplyStyle(changed.traitCollection.userInterfaceStyle, YES);
+    }];
+}
+
+static UIVisualEffectView *DYYYNotificationGlassNotiMakeShell(void) API_AVAILABLE(ios(26.0)) {
+    DYYYGlassFlexView *glass = [[DYYYGlassFlexView alloc] initWithEffect:nil];
+    glass.userInteractionEnabled = NO;
+    glass.alpha = 1.0;
+    glass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    return glass;
+}
+
+static BOOL DYYYNotificationGlassNotiRectUsable(CGRect rect) {
+    return CGRectGetWidth(rect) >= 8.0 && CGRectGetHeight(rect) >= 8.0;
+}
+
+static void DYYYNotificationGlassNotiEnsureBackmost(UIView *slot, UIView *glass) {
+    if (slot.subviews.firstObject == glass) return;
+    [slot insertSubview:glass atIndex:0];
+}
+
+// 0 尺寸写入 UIGlassEffect 不会建材质层，之后只改 frame 补不回来。
+static void DYYYNotificationGlassNotiPlaceGlass(UIVisualEffectView *glass, UIView *slot) {
+    if (!glass || !slot) return;
+    BOOL wasEmpty = !DYYYNotificationGlassNotiRectUsable(glass.bounds);
+    if (!CGRectEqualToRect(glass.frame, slot.bounds)) glass.frame = slot.bounds;
+    DYYYNotificationGlassNotiEnsureBackmost(slot, glass);
+    if (wasEmpty && DYYYNotificationGlassNotiRectUsable(glass.bounds) && glass.effect) {
+        glass.effect = nil;
+        objc_setAssociatedObject(glass, &kDYYYNotificationGlassGlassMaterializingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+static void DYYYNotificationGlassNotiMaterialize(UIVisualEffectView *glass) API_AVAILABLE(ios(26.0)) {
+    if (!glass || !DYYYNotificationGlassNotiRectUsable(glass.bounds) || glass.effect
+        || [objc_getAssociatedObject(glass, &kDYYYNotificationGlassGlassMaterializingKey) boolValue]) {
+        return;
+    }
+    objc_setAssociatedObject(glass, &kDYYYNotificationGlassGlassMaterializingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    DYYYNotificationGlassNotiRunAnimation(YES, ^{
+        if (!glass.superview || !DYYYNotificationGlassNotiEnabled()) {
+            objc_setAssociatedObject(glass, &kDYYYNotificationGlassGlassMaterializingKey,
+                                     nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            return;
+        }
+        UIUserInterfaceStyle style = gDYYYNotificationGlassGlassStyle;
+        if (style == UIUserInterfaceStyleUnspecified) style = DYYYNotificationGlassNotiStyleForView(glass);
+        BOOL clear = DYYYNotificationGlassNotiUsesClear();
+        glass.overrideUserInterfaceStyle = DYYYNotificationGlassNotiOverrideStyle(clear, style);
+        DYYYNotificationGlassNotiInstallEffect(glass, clear, style);
+        objc_setAssociatedObject(glass, &kDYYYNotificationGlassGlassMaterializingKey,
+                                 nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    });
+}
+
+#pragma mark - 圆角
+
+static void DYYYNotificationGlassNotiRememberCorners(UIView *view) {
+    if (!view || objc_getAssociatedObject(view, &kDYYYNotificationGlassCornerRadiusKey)) return;
+    objc_setAssociatedObject(view, &kDYYYNotificationGlassCornerRadiusKey,
+                             @(view.layer.cornerRadius), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if ([view respondsToSelector:@selector(cornerConfiguration)]) {
+        objc_setAssociatedObject(view, &kDYYYNotificationGlassCornerConfigKey,
+                                 view.cornerConfiguration, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+static UICornerConfiguration *DYYYNotificationGlassNotiCardCornerConfig(UIView *view) API_AVAILABLE(ios(26.0)) {
+    DYYYNotificationGlassNotiRememberCorners(view);
+    CGFloat native = kDYYYNotificationGlassNotiNativeCorner;
+    NSNumber *remembered = objc_getAssociatedObject(view, &kDYYYNotificationGlassCornerRadiusKey);
+    if (remembered && remembered.doubleValue > 0.0) native = remembered.doubleValue;
+    CGFloat capsule = MIN(CGRectGetWidth(view.bounds), CGRectGetHeight(view.bounds)) * 0.5;
+    if (capsule < native) capsule = native;
+    CGFloat radius = native + (capsule - native) * DYYYNotificationGlassNotiCornerProgress();
+    view.layer.cornerRadius = radius;
+    return [UICornerConfiguration configurationWithUniformRadius:[UICornerRadius fixedRadius:radius]];
+}
+
+static void DYYYNotificationGlassNotiApplyCardShape(UIView *view, UIVisualEffectView *glass) API_AVAILABLE(ios(26.0)) {
+    if (!view) return;
+    UICornerConfiguration *config = DYYYNotificationGlassNotiCardCornerConfig(view);
+    if ([view respondsToSelector:@selector(setCornerConfiguration:)]) {
+        view.cornerConfiguration = config;
+    }
+    if (glass && [glass respondsToSelector:@selector(setCornerConfiguration:)]) {
+        glass.cornerConfiguration = config;
+    }
+}
+
+static void DYYYNotificationGlassNotiApplyCapsule(UIView *view) API_AVAILABLE(ios(26.0)) {
+    if (!view) return;
+    DYYYNotificationGlassNotiRememberCorners(view);
+    if ([view respondsToSelector:@selector(setCornerConfiguration:)]) {
+        view.cornerConfiguration = [UICornerConfiguration capsuleConfiguration];
+    }
+    CGFloat height = CGRectGetHeight(view.bounds);
+    if (height >= 1.0) view.layer.cornerRadius = height * 0.5;
+}
+
+static void DYYYNotificationGlassNotiRestoreCorners(UIView *view) {
+    NSNumber *radius = objc_getAssociatedObject(view, &kDYYYNotificationGlassCornerRadiusKey);
+    if (!view || !radius) return;
+    if ([view respondsToSelector:@selector(setCornerConfiguration:)]) {
+        view.cornerConfiguration = objc_getAssociatedObject(view, &kDYYYNotificationGlassCornerConfigKey);
+    }
+    view.layer.cornerRadius = radius.doubleValue;
+    objc_setAssociatedObject(view, &kDYYYNotificationGlassCornerRadiusKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(view, &kDYYYNotificationGlassCornerConfigKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+#pragma mark - 查找
+
+static AWEInnerNotificationContainerView *DYYYNotificationGlassNotiContainerOf(UIView *view) {
+    while (view) {
+        if ([view isKindOfClass:%c(AWEInnerNotificationContainerView)]) {
+            return (AWEInnerNotificationContainerView *)view;
+        }
+        view = view.superview;
+    }
+    return nil;
+}
+
+static UIView *DYYYNotificationGlassNotiSlot(AWEInnerNotificationContainerView *container) {
+    UIView *marked = objc_getAssociatedObject(container, &kDYYYNotificationGlassSlotMarkedKey);
+    if (marked.superview == container) return marked;
+
+    if ([container respondsToSelector:@selector(containerView)]) {
+        UIView *candidate = container.containerView;
+        if (candidate.superview == container
+            && (DYYYNotificationGlassNotiColorOpaque(candidate.backgroundColor)
+                || objc_getAssociatedObject(candidate, &kDYYYNotificationGlassSlotColorKey))) {
+            return candidate;
+        }
+    }
+    for (UIView *child in container.subviews) {
+        if (child.hidden) continue;
+        if (DYYYNotificationGlassNotiColorOpaque(child.backgroundColor)
+            || objc_getAssociatedObject(child, &kDYYYNotificationGlassSlotColorKey)) {
+            return child;
+        }
+    }
+    return nil;
+}
+
+static AWEInnerPushCommonView *DYYYNotificationGlassNotiCommonIn(UIView *view, NSUInteger depth) {
+    if (!view || depth > 6) return nil;
+    if ([view isKindOfClass:%c(AWEInnerPushCommonView)]) return (AWEInnerPushCommonView *)view;
+    for (UIView *child in view.subviews) {
+        AWEInnerPushCommonView *found = DYYYNotificationGlassNotiCommonIn(child, depth + 1);
+        if (found) return found;
+    }
+    return nil;
+}
+
+#pragma mark - 卡片
+
+static BOOL DYYYNotificationGlassNotiClearSlot(UIView *slot) {
+    UIColor *current = slot.backgroundColor;
+    if (DYYYNotificationGlassNotiColorOpaque(current)) {
+        if (!objc_getAssociatedObject(slot, &kDYYYNotificationGlassSlotColorKey)) {
+            objc_setAssociatedObject(slot, &kDYYYNotificationGlassSlotColorKey, current, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        slot.backgroundColor = UIColor.clearColor;
+        gDYYYNotificationGlassEverAttached = YES;
+        return YES;
+    }
+    return objc_getAssociatedObject(slot, &kDYYYNotificationGlassSlotColorKey) != nil;
+}
+
+static UIVisualEffectView *DYYYNotificationGlassNotiAttachCard(AWEInnerNotificationContainerView *container,
+                                            UIView *slot)
+    API_AVAILABLE(ios(26.0)) {
+    if (!DYYYNotificationGlassNotiClearSlot(slot)) return nil;
+
+    UIVisualEffectView *glass = objc_getAssociatedObject(slot, &kDYYYNotificationGlassSlotGlassKey);
+    if (!glass) {
+        UIView *first = slot.subviews.firstObject;
+        if ([first isKindOfClass:UIVisualEffectView.class]
+            && first != objc_getAssociatedObject(slot, &kDYYYNotificationGlassSlotGlassKey)) {
+            return nil;
+        }
+        glass = DYYYNotificationGlassNotiMakeShell();
+        ((DYYYGlassFlexView *)glass).flexSourceView = container;
+        objc_setAssociatedObject(slot, &kDYYYNotificationGlassSlotGlassKey, glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(container, &kDYYYNotificationGlassSlotMarkedKey, slot, OBJC_ASSOCIATION_ASSIGN);
+        [gDYYYNotificationGlassGlassCarriers addObject:glass];
+        gDYYYNotificationGlassEverAttached = YES;
+    }
+
+    DYYYNotificationGlassNotiApplyCardShape(container, glass);
+    DYYYNotificationGlassNotiApplyCardShape(slot, glass);
+    DYYYNotificationGlassNotiPlaceGlass(glass, slot);
+    return glass;
+}
+
+static void DYYYNotificationGlassNotiDetachCard(AWEInnerNotificationContainerView *container) {
+    UIView *slot = DYYYNotificationGlassNotiSlot(container);
+    if (!slot) return;
+    [DYYYUtils restoreLiquidGlassInkText:slot];
+    UIView *glass = objc_getAssociatedObject(slot, &kDYYYNotificationGlassSlotGlassKey);
+    [gDYYYNotificationGlassGlassCarriers removeObject:glass];
+    [glass removeFromSuperview];
+    UIColor *original = objc_getAssociatedObject(slot, &kDYYYNotificationGlassSlotColorKey);
+    if (original) slot.backgroundColor = original;
+    DYYYNotificationGlassNotiRestoreCorners(slot);
+    DYYYNotificationGlassNotiRestoreCorners(container);
+    objc_setAssociatedObject(slot, &kDYYYNotificationGlassSlotColorKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(slot, &kDYYYNotificationGlassSlotGlassKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(container, &kDYYYNotificationGlassSlotMarkedKey, nil, OBJC_ASSOCIATION_ASSIGN);
+}
+
+#pragma mark - 回复键
+
+static BOOL DYYYNotificationGlassNotiActionHasGlass(UIButton *button) {
+    return button.configuration && objc_getAssociatedObject(button, &kDYYYNotificationGlassActionClearKey);
+}
+
+static void DYYYNotificationGlassNotiRememberAction(UIButton *button) {
+    if (!button || DYYYNotificationGlassNotiActionHasGlass(button)) return;
+    if (button.configuration && !objc_getAssociatedObject(button, &kDYYYNotificationGlassActionConfigKey)) {
+        objc_setAssociatedObject(button, &kDYYYNotificationGlassActionConfigKey,
+                                 button.configuration, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (button.backgroundColor) {
+        objc_setAssociatedObject(button, &kDYYYNotificationGlassActionColorKey,
+                                 button.backgroundColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    NSAttributedString *attributed = button.currentAttributedTitle;
+    if (attributed.length) {
+        objc_setAssociatedObject(button, &kDYYYNotificationGlassActionAttrTitleKey,
+                                 attributed, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    }
+    NSString *title = button.currentTitle.length ? button.currentTitle : attributed.string;
+    if (title.length) {
+        objc_setAssociatedObject(button, &kDYYYNotificationGlassActionTitleKey,
+                                 title, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    }
+    UIColor *foreground = nil;
+    if (attributed.length) {
+        foreground = [attributed attribute:NSForegroundColorAttributeName
+                                   atIndex:0
+                            effectiveRange:NULL];
+    }
+    if (!foreground) foreground = [button titleColorForState:UIControlStateNormal];
+    if (foreground) {
+        objc_setAssociatedObject(button, &kDYYYNotificationGlassActionForegroundKey,
+                                 foreground, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+static UIButtonConfiguration *DYYYNotificationGlassNotiMakeActionConfig(BOOL clear) API_AVAILABLE(ios(26.0)) {
+    UIButtonConfiguration *config = nil;
+    if (clear && [UIButtonConfiguration respondsToSelector:@selector(clearGlassButtonConfiguration)]) {
+        config = [UIButtonConfiguration clearGlassButtonConfiguration];
+    } else if ([UIButtonConfiguration respondsToSelector:@selector(glassButtonConfiguration)]) {
+        config = [UIButtonConfiguration glassButtonConfiguration];
+    }
+    if (!config) return nil;
+    config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    return config;
+}
+
+static void DYYYNotificationGlassNotiWriteActionTitle(UIButton *button, UIButtonConfiguration *config) {
+    NSAttributedString *attributed = objc_getAssociatedObject(button, &kDYYYNotificationGlassActionAttrTitleKey);
+    NSString *title = objc_getAssociatedObject(button, &kDYYYNotificationGlassActionTitleKey);
+    UIColor *foreground = objc_getAssociatedObject(button, &kDYYYNotificationGlassActionForegroundKey);
+    if (attributed.length) {
+        config.attributedTitle = attributed;
+    } else if (title.length) {
+        config.title = title;
+    }
+    if (foreground) config.baseForegroundColor = foreground;
+}
+
+static void DYYYNotificationGlassNotiRestoreAction(UIButton *button) {
+    if (!button || !objc_getAssociatedObject(button, &kDYYYNotificationGlassActionForegroundKey)) return;
+    UIButtonConfiguration *original = objc_getAssociatedObject(button, &kDYYYNotificationGlassActionConfigKey);
+    button.configuration = original;
+    UIColor *color = objc_getAssociatedObject(button, &kDYYYNotificationGlassActionColorKey);
+    if (color) button.backgroundColor = color;
+    if (!original) {
+        NSAttributedString *attributed = objc_getAssociatedObject(button, &kDYYYNotificationGlassActionAttrTitleKey);
+        NSString *title = objc_getAssociatedObject(button, &kDYYYNotificationGlassActionTitleKey);
+        UIColor *foreground = objc_getAssociatedObject(button, &kDYYYNotificationGlassActionForegroundKey);
+        if (attributed) {
+            [button setAttributedTitle:attributed forState:UIControlStateNormal];
+        } else if (title) {
+            [button setTitle:title forState:UIControlStateNormal];
+        }
+        if (foreground) [button setTitleColor:foreground forState:UIControlStateNormal];
+    }
+    objc_setAssociatedObject(button, &kDYYYNotificationGlassActionConfigKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(button, &kDYYYNotificationGlassActionColorKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(button, &kDYYYNotificationGlassActionTitleKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(button, &kDYYYNotificationGlassActionAttrTitleKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(button, &kDYYYNotificationGlassActionForegroundKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(button, &kDYYYNotificationGlassActionClearKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void DYYYNotificationGlassNotiApplyAction(UIButton *button) API_AVAILABLE(ios(26.0)) {
+    if (!button || button.hidden || button.alpha < 0.01) {
+        if (button) DYYYNotificationGlassNotiRestoreAction(button);
+        return;
+    }
+
+    DYYYNotificationGlassNotiRememberAction(button);
+    if (objc_getAssociatedObject(button, &kDYYYNotificationGlassActionColorKey)) {
+        button.backgroundColor = UIColor.clearColor;
+    }
+
+    BOOL clear = DYYYNotificationGlassNotiUsesClear();
+    NSNumber *installed = objc_getAssociatedObject(button, &kDYYYNotificationGlassActionClearKey);
+    if (DYYYNotificationGlassNotiActionHasGlass(button) && installed.boolValue == clear) return;
+
+    UIButtonConfiguration *config = DYYYNotificationGlassNotiMakeActionConfig(clear);
+    if (!config) return;
+    DYYYNotificationGlassNotiWriteActionTitle(button, config);
+    button.configuration = config;
+    objc_setAssociatedObject(button, &kDYYYNotificationGlassActionClearKey, @(clear), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    gDYYYNotificationGlassEverAttached = YES;
+}
+
+#pragma mark - 角标
+
+static void DYYYNotificationGlassNotiRestoreBadge(UIView *badge) {
+    if (!badge) return;
+    UIView *glass = objc_getAssociatedObject(badge, &kDYYYNotificationGlassBadgeGlassKey);
+    [gDYYYNotificationGlassGlassCarriers removeObject:glass];
+    [glass removeFromSuperview];
+    UIColor *original = objc_getAssociatedObject(badge, &kDYYYNotificationGlassBadgeColorKey);
+    if (original) badge.backgroundColor = original;
+    DYYYNotificationGlassNotiRestoreCorners(badge);
+    objc_setAssociatedObject(badge, &kDYYYNotificationGlassBadgeColorKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(badge, &kDYYYNotificationGlassBadgeGlassKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void DYYYNotificationGlassNotiApplyBadge(UIView *badge) API_AVAILABLE(ios(26.0)) {
+    if (!badge || badge.hidden || badge.alpha < 0.01) {
+        if (badge) DYYYNotificationGlassNotiRestoreBadge(badge);
+        return;
+    }
+
+    UIColor *current = badge.backgroundColor;
+    if (DYYYNotificationGlassNotiColorOpaque(current)) {
+        if (!objc_getAssociatedObject(badge, &kDYYYNotificationGlassBadgeColorKey)) {
+            objc_setAssociatedObject(badge, &kDYYYNotificationGlassBadgeColorKey, current, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        badge.backgroundColor = UIColor.clearColor;
+    } else if (!objc_getAssociatedObject(badge, &kDYYYNotificationGlassBadgeColorKey)) {
+        return;
+    }
+
+    UIVisualEffectView *glass = objc_getAssociatedObject(badge, &kDYYYNotificationGlassBadgeGlassKey);
+    if (!glass) {
+        glass = DYYYNotificationGlassNotiMakeShell();
+        glass.cornerConfiguration = [UICornerConfiguration capsuleConfiguration];
+        ((DYYYGlassFlexView *)glass).flexSourceView = badge;
+        objc_setAssociatedObject(badge, &kDYYYNotificationGlassBadgeGlassKey, glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [gDYYYNotificationGlassGlassCarriers addObject:glass];
+        gDYYYNotificationGlassEverAttached = YES;
+    }
+    DYYYNotificationGlassNotiApplyCapsule(badge);
+    DYYYNotificationGlassNotiPlaceGlass(glass, badge);
+    DYYYNotificationGlassNotiMaterialize(glass);
+}
+
+#pragma mark - 「私信了你」
+
+static BOOL DYYYNotificationGlassNotiIsHintText(NSString *text) {
+    if (text.length < kDYYYNotificationGlassNotiHintPrefix.length) return NO;
+    NSString *trimmed = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (![trimmed hasPrefix:kDYYYNotificationGlassNotiHintPrefix]) return NO;
+    NSString *rest = [trimmed substringFromIndex:kDYYYNotificationGlassNotiHintPrefix.length];
+    static NSCharacterSet *junk;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        junk = [NSCharacterSet characterSetWithCharactersInString:@":： "];
+    });
+    return [rest stringByTrimmingCharactersInSet:junk].length == 0;
+}
+
+static void DYYYNotificationGlassNotiWalkLabels(UIView *view, NSUInteger depth, void (^block)(UILabel *label)) {
+    if (!view || depth > 8 || !block) return;
+    if ([view isKindOfClass:UILabel.class]) block((UILabel *)view);
+    for (UIView *child in view.subviews) DYYYNotificationGlassNotiWalkLabels(child, depth + 1, block);
+}
+
+static void DYYYNotificationGlassNotiRestoreHint(AWEInnerPushCommonView *common) {
+    UIView *root = ([common respondsToSelector:@selector(middleContentTextStackView)]
+                    && common.middleContentTextStackView)
+        ? common.middleContentTextStackView : common;
+    DYYYNotificationGlassNotiWalkLabels(root, 0, ^(UILabel *label) {
+        NSNumber *hidden = objc_getAssociatedObject(label, &kDYYYNotificationGlassHintHiddenKey);
+        if (!hidden) return;
+        label.hidden = hidden.boolValue;
+        objc_setAssociatedObject(label, &kDYYYNotificationGlassHintHiddenKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    });
+}
+
+static AWEInnerPushCommonView *DYYYNotificationGlassNotiCommonOf(UIView *view) {
+    while (view) {
+        if ([view isKindOfClass:%c(AWEInnerPushCommonView)]) return (AWEInnerPushCommonView *)view;
+        view = view.superview;
+    }
+    return nil;
+}
+
+static void DYYYNotificationGlassNotiHideHintLabel(UILabel *label) {
+    if (!label) return;
+    if (!objc_getAssociatedObject(label, &kDYYYNotificationGlassHintHiddenKey)) {
+        objc_setAssociatedObject(label, &kDYYYNotificationGlassHintHiddenKey,
+                                 @(label.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (!label.hidden) label.hidden = YES;
+    gDYYYNotificationGlassEverAttached = YES;
+}
+
+#pragma mark - 迟到的文字色
+
+static void DYYYNotificationGlassNotiReapplyInk(UILabel *label) {
+    if (gDYYYNotificationGlassInkReapplying) return;
+    if (![label.window isKindOfClass:%c(AWEInnerNotificationWindow)]
+        && gDYYYNotificationGlassContainers.count == 0 && gDYYYNotificationGlassCommonViews.count == 0) {
+        return;
+    }
+    if (!DYYYNotificationGlassNotiEnabled()) return;
+
+    for (UIView *node = label; node; node = node.superview) {
+        // 按钮标题由 UIButtonConfiguration 管，写 textColor 会被配置刷掉，两边打架。
+        if ([node isKindOfClass:UIControl.class]) return;
+        if (![node isKindOfClass:%c(AWEInnerNotificationContainerView)]) continue;
+        gDYYYNotificationGlassInkReapplying = YES;
+        [DYYYUtils applyLiquidGlassInkText:label clear:DYYYNotificationGlassNotiUsesClear() style:DYYYNotificationGlassNotiStyleForView(label)];
+        gDYYYNotificationGlassInkReapplying = NO;
+        return;
+    }
+}
+
+static void DYYYNotificationGlassNotiApplyHint(AWEInnerPushCommonView *common) {
+    UIView *root = ([common respondsToSelector:@selector(middleContentTextStackView)]
+                    && common.middleContentTextStackView)
+        ? common.middleContentTextStackView : common;
+    DYYYNotificationGlassNotiWalkLabels(root, 0, ^(UILabel *label) {
+        NSString *text = label.text.length ? label.text : label.attributedText.string;
+        BOOL hint = DYYYNotificationGlassNotiIsHintText(text);
+        NSNumber *marked = objc_getAssociatedObject(label, &kDYYYNotificationGlassHintHiddenKey);
+        if (hint) {
+            DYYYNotificationGlassNotiHideHintLabel(label);
+        } else if (marked) {
+            label.hidden = marked.boolValue;
+            objc_setAssociatedObject(label, &kDYYYNotificationGlassHintHiddenKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    });
+}
+
+#pragma mark - 同步
+
+static void DYYYNotificationGlassNotiRestoreCommon(AWEInnerPushCommonView *common) {
+    if ([common respondsToSelector:@selector(rightActionButton)]) {
+        DYYYNotificationGlassNotiRestoreAction(common.rightActionButton);
+    }
+    if ([common respondsToSelector:@selector(leftExtraIconBackgroundView)]) {
+        DYYYNotificationGlassNotiRestoreBadge(common.leftExtraIconBackgroundView);
+    }
+    DYYYNotificationGlassNotiRestoreHint(common);
+    [DYYYUtils restoreLiquidGlassInkText:common];
+    [gDYYYNotificationGlassCommonViews removeObject:common];
+}
+
+static void DYYYNotificationGlassNotiRestoreContainer(AWEInnerNotificationContainerView *container) {
+    AWEInnerPushCommonView *common = DYYYNotificationGlassNotiCommonIn(container, 0);
+    if (common) DYYYNotificationGlassNotiRestoreCommon(common);
+    DYYYNotificationGlassNotiDetachCard(container);
+    [gDYYYNotificationGlassContainers removeObject:container];
+}
+
+static void DYYYNotificationGlassNotiSyncCommon(AWEInnerPushCommonView *common) API_AVAILABLE(ios(26.0)) {
+    if (!common) return;
+    BOOL enabled = DYYYNotificationGlassNotiEnabled();
+    if (!enabled && !gDYYYNotificationGlassEverAttached) return;
+    if (!enabled) {
+        DYYYNotificationGlassNotiRestoreCommon(common);
+        return;
+    }
+
+    [gDYYYNotificationGlassCommonViews addObject:common];
+    DYYYNotificationGlassNotiApplyHint(common);
+    [DYYYUtils applyLiquidGlassInkText:common clear:DYYYNotificationGlassNotiUsesClear() style:DYYYNotificationGlassNotiStyleForView(common)];
+    if ([common respondsToSelector:@selector(rightActionButton)]) {
+        DYYYNotificationGlassNotiApplyAction(common.rightActionButton);
+    }
+    if ([common respondsToSelector:@selector(leftExtraIconBackgroundView)]) {
+        DYYYNotificationGlassNotiApplyBadge(common.leftExtraIconBackgroundView);
+    }
+}
+
+static void DYYYNotificationGlassNotiSyncContainer(AWEInnerNotificationContainerView *container)
+    API_AVAILABLE(ios(26.0)) {
+    if (!container) return;
+    BOOL enabled = DYYYNotificationGlassNotiEnabled();
+    if (!enabled && !gDYYYNotificationGlassEverAttached) return;
+    if (!enabled) {
+        DYYYNotificationGlassNotiRestoreContainer(container);
+        return;
+    }
+
+    UIView *slot = DYYYNotificationGlassNotiSlot(container);
+    if (!slot) return;
+
+    [gDYYYNotificationGlassContainers addObject:container];
+    DYYYNotificationGlassNotiObserveStyle(container);
+    UIUserInterfaceStyle style = DYYYNotificationGlassNotiStyleForView(container);
+
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    UIVisualEffectView *card = DYYYNotificationGlassNotiAttachCard(container, slot);
+    DYYYNotificationGlassNotiSyncCommon(DYYYNotificationGlassNotiCommonIn(container, 0));
+    // 从白槽起走一遍：点赞、评论、直播这类不带 AWEInnerPushCommonView 的横幅也覆盖到。
+    [DYYYUtils applyLiquidGlassInkText:slot clear:DYYYNotificationGlassNotiUsesClear() style:style];
+    [CATransaction commit];
+
+    if (card) {
+        DYYYNotificationGlassNotiApplyStyle(style, YES);
+        DYYYNotificationGlassNotiMaterialize(card);
+    }
+}
+
+#pragma mark - Hook
+
+%group DYYYNotificationGlassInnerNotificationGlassHooks
+
+%hook AWEInnerNotificationContainerView
+
+- (void)renderModel:(id)model context:(id)context {
+    %orig;
+    if (@available(iOS 26.0, *)) DYYYNotificationGlassNotiSyncContainer(self);
+}
+
+- (void)layoutSubviews {
+    %orig;
+    if (@available(iOS 26.0, *)) DYYYNotificationGlassNotiSyncContainer(self);
+}
+
+- (void)viewDidDisappear:(BOOL)animated reason:(long long)reason {
+    %orig;
+    if (self.window) return;
+    DYYYNotificationGlassNotiRestoreContainer(self);
+}
+
+%end
+
+%hook AWEInnerPushCommonView
+
+- (void)updateViewWithRequest:(id)request notificationContent:(id)content viewModel:(id)viewModel {
+    %orig;
+    if (@available(iOS 26.0, *)) {
+        DYYYNotificationGlassNotiSyncCommon(self);
+        AWEInnerNotificationContainerView *container = DYYYNotificationGlassNotiContainerOf(self);
+        if (container) DYYYNotificationGlassNotiSyncContainer(container);
+    }
+}
+
+- (void)layoutSubviews {
+    %orig;
+    if (@available(iOS 26.0, *)) DYYYNotificationGlassNotiSyncCommon(self);
+}
+
+%end
+
+// 文案在布局之后才写入；只靠 layoutSubviews 会首帧漏藏，拖一下才消失。
+%hook UILabel
+
+- (void)setText:(NSString *)text {
+    %orig;
+    if (DYYYNotificationGlassNotiEnabled() && DYYYNotificationGlassNotiIsHintText(text) && DYYYNotificationGlassNotiCommonOf(self)) {
+        DYYYNotificationGlassNotiHideHintLabel(self);
+    }
+    DYYYNotificationGlassNotiReapplyInk(self);
+}
+
+- (void)setAttributedText:(NSAttributedString *)text {
+    %orig;
+    if (DYYYNotificationGlassNotiEnabled() && DYYYNotificationGlassNotiIsHintText(text.string) && DYYYNotificationGlassNotiCommonOf(self)) {
+        DYYYNotificationGlassNotiHideHintLabel(self);
+    }
+    DYYYNotificationGlassNotiReapplyInk(self);
+}
+
+- (void)setTextColor:(UIColor *)color {
+    %orig;
+    DYYYNotificationGlassNotiReapplyInk(self);
+}
+
+- (void)setHidden:(BOOL)hidden {
+    if (!hidden && DYYYNotificationGlassNotiEnabled() && objc_getAssociatedObject(self, &kDYYYNotificationGlassHintHiddenKey)) {
+        NSString *text = self.text.length ? self.text : self.attributedText.string;
+        if (DYYYNotificationGlassNotiIsHintText(text)) {
+            %orig(YES);
+            return;
+        }
+    }
+    %orig;
+}
+
+%end
+
+%end
+
+// 视频全屏和评论态位置控制移植自 DYKiller，MIT 许可见 LICENSE。
+#pragma mark - VideoGeometry
+
+static const CGFloat kDYYYFullscreenFullscreenMinAspect = 1.70;
+static const long long kDYYYFullscreenAwemeTypeImage = 68;
+// 覆盖 @3x 像素对齐带来的亚像素漂移。
+static const CGFloat kDYYYFullscreenGeometryTolerance = 0.5;
+// 关闭开关时要立刻还原的分支回调；分支不多，固定容量即可。
+static void (*gDYYYFullscreenRestoreHooks[4])(void);
+static NSUInteger gDYYYFullscreenRestoreCount = 0;
+
+BOOL DYYYFullscreenVideoFullscreenOn(void) {
+    return DYYYGetBool(@"DYYYEnableFullScreen");
+}
+
+BOOL DYYYFullscreenCommentFreezeOn(void) {
+    return [DYYYUtils liquidGlassAvailable] && DYYYGetBool(@"DYYYEnableCommentBlur");
+}
+
+void DYYYFullscreenVideoFullscreenRegisterRestore(void (*restore)(void)) {
+    if (!restore || gDYYYFullscreenRestoreCount >= sizeof(gDYYYFullscreenRestoreHooks) / sizeof(gDYYYFullscreenRestoreHooks[0])) return;
+    gDYYYFullscreenRestoreHooks[gDYYYFullscreenRestoreCount++] = restore;
+}
+
+#pragma mark - 类缓存
+
+static Class DYYYFullscreenMergeClass(void) {
+    static Class cls;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cls = NSClassFromString(@"AWEDPlayerViewController_Merge"); });
+    return cls;
+}
+
+static Class DYYYFullscreenPlayInteractionClass(void) {
+    static Class cls;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cls = NSClassFromString(@"AWEPlayInteractionViewController"); });
+    return cls;
+}
+
+#pragma mark - 视频容器的钉位目标
+
+// 拉满整屏只对比例达标的竖屏视频做：图文、横屏、低比例竖屏拉满会 aspect-fill 过裁。
+// 它们只需保持容器自然满幅，背景延伸到底栏交给 DYYYFullscreenVideoPageChrome.xm 的 DYYYFullscreenSyncBackdrop。
+static BOOL DYYYFullscreenMergeCanCoverScreen(AWEDPlayerViewController_Merge *merge) {
+    if (![merge isKindOfClass:DYYYFullscreenMergeClass()]) return NO;
+
+    AWEAwemeModel *model = merge.model;
+    if (model.awemeType == kDYYYFullscreenAwemeTypeImage) return NO;
+    if (merge.hasInlandscape) return NO;
+    if ([merge respondsToSelector:@selector(isInLandscapeFeedStatus)]
+        && [merge isInLandscapeFeedStatus]) {
+        return NO;
+    }
+
+    AWEVideoModel *video = model.video;
+    double width = video.width.doubleValue;
+    double height = video.height.doubleValue;
+    return width <= 0.0
+        || height <= 0.0
+        || (height / width) >= kDYYYFullscreenFullscreenMinAspect;
+}
+
+CGRect DYYYFullscreenVideoContainerTargetFrame(UIView *view) {
+    if (!DYYYFullscreenVideoFullscreenOn() && !DYYYFullscreenCommentFreezeOn()) return CGRectNull;
+
+    UIWindow *window = view.window;
+    if (window && window.windowLevel != UIWindowLevelNormal) return CGRectNull;
+
+    UIView *parent = view.superview;
+    CGFloat width = CGRectGetWidth(parent.bounds);
+    CGFloat height = CGRectGetHeight(parent.bounds);
+    if (width <= 0.0 || height <= 0.0) return CGRectNull;
+
+    if (DYYYFullscreenVideoFullscreenOn()
+        && DYYYFullscreenMergeCanCoverScreen((AWEDPlayerViewController_Merge *)view.nextResponder)) {
+        CGFloat full = [DYYYUtils fullscreenCellHeight:view];
+        if (full > height) height = full;
+    }
+    return CGRectMake(0.0, 0.0, width, height);
+}
+
+BOOL DYYYFullscreenRectsClose(CGRect lhs, CGRect rhs) {
+    return fabs(CGRectGetMinX(lhs) - CGRectGetMinX(rhs)) <= kDYYYFullscreenGeometryTolerance
+        && fabs(CGRectGetMinY(lhs) - CGRectGetMinY(rhs)) <= kDYYYFullscreenGeometryTolerance
+        && fabs(CGRectGetWidth(lhs) - CGRectGetWidth(rhs)) <= kDYYYFullscreenGeometryTolerance
+        && fabs(CGRectGetHeight(lhs) - CGRectGetHeight(rhs)) <= kDYYYFullscreenGeometryTolerance;
+}
+
+static CGRect DYYYFullscreenAdjustFrame(UIView *view, CGRect frame) {
+    UIResponder *owner = view.nextResponder;
+    if (!owner) return CGRectNull;
+
+    if ([owner isKindOfClass:DYYYFullscreenMergeClass()]) {
+        CGRect target = DYYYFullscreenVideoContainerTargetFrame(view);
+        if (CGRectIsNull(target) || DYYYFullscreenRectsClose(frame, target)) return CGRectNull;
+        return target;
+    }
+    if ([owner isKindOfClass:DYYYFullscreenPlayInteractionClass()]) {
+        return DYYYFullscreenFeedHUDAdjustFrame(view, frame);
+    }
+    return CGRectNull;
+}
+
+#pragma mark - 全局 UIView 钩子
+
+#pragma mark - VideoFeedTable
+
+%group DYYYFullscreenVideoFeedTableHooks
+
+static const CGFloat kDYYYFullscreenFeedTolerance = 0.5;
+// 表高至少要到容器的这个比例才认作「已排好、只差一个底栏」，排除布局早期的半成品尺寸。
+static const CGFloat kDYYYFullscreenFeedMinHeightRatio = 0.5;
+// 从 HUD 往上找视频表的最大层数（图文内容多两层容器，取 8 有余量）。
+static const NSUInteger kDYYYFullscreenFeedAncestorLimit = 8;
+
+// 撑高前的表高。挂在表上，既是还原依据，也是 HUD 的钉位目标。
+static char kDYYYFullscreenFeedOriginalHeightKey;
+// 所有撑高过的表（弱引用），供关闭开关时立即还原。多页并存时可能不止一张。
+static NSHashTable<UITableView *> *gDYYYFullscreenStretchedTables = nil;
+
+#pragma mark - 命中统计
+
+// 这两个数一起看才有意义：写入时拦截 vs 布局后兜底。首页/朋友页实测比例约 130:6，
+// 是「写入时拦截不能砍成事后纠正」的直接依据。
+static NSUInteger gDYYYFullscreenHitSetFrame = 0;
+static NSUInteger gDYYYFullscreenHitFallback = 0;
+// 40.7.0 的旧表写入入口。与新版控制器布局补正分开统计，用于后续判断旧逻辑是否仍有贡献。
+static NSUInteger gDYYYFullscreenHitTableSetFrame = 0;
+// 控制器布局完成后补正已进入视图树的子表，并分别统计首页与详情入口。
+static NSUInteger gDYYYFullscreenHitTableLayout = 0;
+struct DYYYFullscreenFeedTableLayoutStats {
+    NSUInteger runs;
+    NSUInteger adjustments;
+};
+static DYYYFullscreenFeedTableLayoutStats gDYYYFullscreenFeedTableLayoutStats = {};
+static DYYYFullscreenFeedTableLayoutStats gDYYYFullscreenDetailTableLayoutStats = {};
+
+#pragma mark - 目标判定
+
+Class DYYYFullscreenVideoFeedTableClass(void) {
+    static Class cls;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cls = NSClassFromString(@"AWEFeedDataSafeTableView"); });
+    return cls;
+}
+
+UIView *DYYYFullscreenFeedTableForView(UIView *view) {
+    Class tableCls = DYYYFullscreenVideoFeedTableClass();
+    if (!tableCls) return nil;
+
+    UIView *ancestor = view.superview;
+    for (NSUInteger i = 0; ancestor && i < kDYYYFullscreenFeedAncestorLimit; i++, ancestor = ancestor.superview) {
+        if ([ancestor isKindOfClass:tableCls]) return ancestor;
+    }
+    return nil;
+}
+
+NSNumber *DYYYFullscreenVideoFeedTableOriginalHeight(UIView *table) {
+    return objc_getAssociatedObject(table, &kDYYYFullscreenFeedOriginalHeightKey);
+}
+
+// 该视图所在视频表撑高前的高度，也就是 HUD 的钉位目标；不在撑高作用域内返回 0。
+static CGFloat DYYYFullscreenFeedOriginalHeight(UIView *view) {
+    if (!DYYYFullscreenVideoFullscreenOn()) return 0.0;
+    return DYYYFullscreenVideoFeedTableOriginalHeight(DYYYFullscreenFeedTableForView(view)).doubleValue;
+}
+
+#pragma mark - 撑高视频表
+
+// 共享撑高规则同时供表写入与控制器布局入口调用。首页表自己实现 setFrame:，
+// 详情表继承基类的写入入口；已达到目标高度的写入直接放行。
+static CGRect DYYYFullscreenFeedTableAdjustFrameToHeight(UITableView *table, CGRect frame, CGFloat target) {
+    if (!DYYYFullscreenVideoFullscreenOn()) {
+        // 关闭后一律放行，抖音写什么就是什么；标记清掉以免 HUD 继续被钉。
+        objc_setAssociatedObject(table, &kDYYYFullscreenFeedOriginalHeightKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return CGRectNull;
+    }
+
+    CGFloat current = CGRectGetHeight(frame);
+    // 容器不比来意的高度更高 → 这张表没被底栏压缩过（搜索页、好友聊天页就是这种），不在作用域内；
+    // 高度不到容器一半 → 布局早期的半成品，记下它会把 HUD 钉到错误的位置。
+    if (!isfinite(target) || !isfinite(current)
+        || target <= 0.0
+        || current >= target - kDYYYFullscreenFeedTolerance
+        || current < target * kDYYYFullscreenFeedMinHeightRatio) {
+        return CGRectNull;
+    }
+
+    if (!objc_getAssociatedObject(table, &kDYYYFullscreenFeedOriginalHeightKey)) {
+        objc_setAssociatedObject(table, &kDYYYFullscreenFeedOriginalHeightKey, @(current),
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [gDYYYFullscreenStretchedTables addObject:table];
+    }
+    frame.size.height = target;
+    return frame;
+}
+
+CGRect DYYYFullscreenVideoFeedTableAdjustFrame(UITableView *table, CGRect frame) {
+    return DYYYFullscreenFeedTableAdjustFrameToHeight(table, frame,
+        CGRectGetHeight(table.superview.bounds));
+}
+
+// 详情表在建行前可能尚未挂入父视图，此时取已加载控制器根视图的高度。
+// 首次写表尺寸之前记录真实原高，供首个 Cell 的 HUD 钉位使用。
+BOOL DYYYFullscreenVideoFeedTablePrepareForController(UIViewController *controller, UITableView *table) {
+    if (!DYYYFullscreenVideoFullscreenOn() || !NSThread.isMainThread || !table) return NO;
+    Class tableClass = DYYYFullscreenVideoFeedTableClass();
+    UIView *root = controller.viewIfLoaded;
+    if (!tableClass || ![table isKindOfClass:tableClass] || !root) return NO;
+    UIWindow *window = table.window ?: root.window;
+    if (window && window.windowLevel != UIWindowLevelNormal) return NO;
+    if (table.superview && ![table isDescendantOfView:root]) return NO;
+    if (!CGAffineTransformIsIdentity(table.transform)) return NO;
+
+    CGFloat target = table.superview
+        ? CGRectGetHeight(table.superview.bounds) : CGRectGetHeight(root.bounds);
+    CGRect adjusted = DYYYFullscreenFeedTableAdjustFrameToHeight(table, table.frame, target);
+    if (CGRectIsNull(adjusted)) return NO;
+    table.frame = adjusted;
+    return YES;
+}
+
+// 在写入时就改成满高：抖音把表高改回原值（如关闭评论区）的那一刻即被顶回去，
+// 不必等下一次布局。事后在 layoutSubviews 里改会留下「切一下才恢复」的空窗。
+%hook AWEFeedDataSafeTableView
+
+- (void)setFrame:(CGRect)frame {
+    CGRect adjusted = DYYYFullscreenVideoFeedTableAdjustFrame(self, frame);
+    if (CGRectIsNull(adjusted)) {
+        %orig;
+        return;
+    }
+    gDYYYFullscreenHitTableSetFrame++;
+    %orig(adjusted);
+}
+
+%end
+
+%hook AWEFeedTableView
+
+- (void)setFrame:(CGRect)frame {
+    CGRect adjusted = DYYYFullscreenVideoFeedTableAdjustFrame(self, frame);
+    if (CGRectIsNull(adjusted)) {
+        %orig;
+        return;
+    }
+    gDYYYFullscreenHitTableSetFrame++;
+    %orig(adjusted);
+}
+
+%end
+
+// 控制器完成原生布局后，子表已进入视图树，可以读取父容器高度。
+// 两套控制器共用撑高规则；仅在目标未满足时修改子表 frame。
+static void DYYYFullscreenSyncFeedTableLayout(UITableView *table, DYYYFullscreenFeedTableLayoutStats *stats) {
+    stats->runs++;
+    if (!table) return;
+
+    CGRect adjusted = DYYYFullscreenVideoFeedTableAdjustFrame(table, table.frame);
+    if (CGRectIsNull(adjusted)) return;
+
+    table.frame = adjusted;
+    gDYYYFullscreenHitTableLayout++;
+    stats->adjustments++;
+}
+
+%hook AWEFeedTableViewController
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    if (!DYYYFullscreenVideoFullscreenOn()) return;
+    DYYYFullscreenSyncFeedTableLayout(self.tableView, &gDYYYFullscreenFeedTableLayoutStats);
+}
+
+%end
+
+%hook AWEAwemeDetailTableViewController
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    if (!DYYYFullscreenVideoFullscreenOn()) return;
+    DYYYFullscreenSyncFeedTableLayout(self.tableView, &gDYYYFullscreenDetailTableLayoutStats);
+}
+
+%end
+
+#pragma mark - HUD 钉位
+
+CGRect DYYYFullscreenFeedHUDAdjustFrame(UIView *view, CGRect frame) {
+    if (!DYYYFullscreenVideoFullscreenOn()) return CGRectNull;
+
+    UIView *table = DYYYFullscreenFeedTableForView(view);
+    if (!table) return CGRectNull;
+
+    NSNumber *original = DYYYFullscreenVideoFeedTableOriginalHeight(table);
+    if (!original) return CGRectNull;
+
+    // 只拦「被设成撑高后的满高」这一种写入；缩小态（如评论展开）一律放行。
+    CGFloat pinned = original.doubleValue;
+    if (CGRectGetHeight(frame) <= pinned + kDYYYFullscreenFeedTolerance) return CGRectNull;
+
+    gDYYYFullscreenHitSetFrame++;
+    frame.size.height = pinned;
+    return frame;
+}
+
+%hook AWEPlayInteractionViewController
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+
+    // 已经在 HUD 控制器内部，不必再判类型。
+    UIView *view = self.viewIfLoaded;
+    if (!view) return;
+
+    CGFloat original = DYYYFullscreenFeedOriginalHeight(view);
+    if (original <= 0.0) return;
+
+    CGRect frame = view.frame;
+    if (fabs(CGRectGetMinY(frame)) <= kDYYYFullscreenFeedTolerance
+        && CGRectGetHeight(frame) <= original + kDYYYFullscreenFeedTolerance) {
+        return;
+    }
+
+    view.frame = CGRectMake(CGRectGetMinX(frame), 0.0, CGRectGetWidth(frame), original);
+    gDYYYFullscreenHitFallback++;
+}
+
+%end
+
+#pragma mark - 还原
+
+// 关闭开关时立刻把表高还回去，不必等抖音下一次写 frame。
+static void DYYYFullscreenVideoFeedTableRestore(void) {
+    for (UITableView *table in gDYYYFullscreenStretchedTables.allObjects) {
+        NSNumber *original = DYYYFullscreenVideoFeedTableOriginalHeight(table);
+        if (!original) continue;
+
+        objc_setAssociatedObject(table, &kDYYYFullscreenFeedOriginalHeightKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        CGRect frame = table.frame;
+        frame.size.height = original.doubleValue;
+        table.frame = frame;
+    }
+    [gDYYYFullscreenStretchedTables removeAllObjects];
+}
+
+%end
+
+#pragma mark - VideoDetailTable
+
+static const CGFloat kDYYYFullscreenDetailHeightTolerance = 0.5;
+static NSUInteger gDYYYFullscreenDKDetailPrepareRuns;
+static NSUInteger gDYYYFullscreenDKDetailPrepareChanges;
+struct DYYYFullscreenDetailHeightStats {
+    NSUInteger runs;
+    NSUInteger changes;
+};
+static DYYYFullscreenDetailHeightStats gDYYYFullscreenDKDetailFixedStats = {};
+static DYYYFullscreenDetailHeightStats gDYYYFullscreenDKDetailIndexStats = {};
+static DYYYFullscreenDetailHeightStats gDYYYFullscreenDKDetailRowStats = {};
+
+static void DYYYFullscreenPrepareDetailTable(AWEAwemeDetailTableViewController *controller,
+                                 UITableView *table) {
+    if (!DYYYFullscreenVideoFullscreenOn()) return;
+    gDYYYFullscreenDKDetailPrepareRuns++;
+    if (DYYYFullscreenVideoFeedTablePrepareForController(controller, table)) {
+        gDYYYFullscreenDKDetailPrepareChanges++;
+    }
+}
+
+// 仅统一已接管表中的整页行高；原生特殊行、自动尺寸和未就绪尺寸继续使用原返回值。
+static double DYYYFullscreenDetailRowHeight(UITableView *table, double nativeHeight,
+                                DYYYFullscreenDetailHeightStats *stats) {
+    if (!DYYYFullscreenVideoFullscreenOn() || !NSThread.isMainThread) return nativeHeight;
+    stats->runs++;
+    NSNumber *original = DYYYFullscreenVideoFeedTableOriginalHeight(table);
+    CGFloat target = CGRectGetHeight(table.bounds);
+    if (!original || !isfinite(nativeHeight) || !isfinite(target)
+        || nativeHeight <= 0.0 || target <= original.doubleValue + kDYYYFullscreenDetailHeightTolerance) {
+        return nativeHeight;
+    }
+    if (fabs(nativeHeight - original.doubleValue) > kDYYYFullscreenDetailHeightTolerance
+        && fabs(nativeHeight - target) > kDYYYFullscreenDetailHeightTolerance) {
+        return nativeHeight;
+    }
+    if (fabs(nativeHeight - target) > kDYYYFullscreenDetailHeightTolerance) stats->changes++;
+    return target;
+}
+
+%group DYYYFullscreenVideoDetailTableHooks
+
+%hook AWEAwemeDetailTableViewController
+
+- (void)setupDetailTableView {
+    %orig;
+    if (DYYYFullscreenVideoFullscreenOn()) DYYYFullscreenPrepareDetailTable(self, self.tableView);
+}
+
+- (void)viewWillLayoutSubviews {
+    if (DYYYFullscreenVideoFullscreenOn()) DYYYFullscreenPrepareDetailTable(self, self.tableView);
+    %orig;
+    if (DYYYFullscreenVideoFullscreenOn()) DYYYFullscreenPrepareDetailTable(self, self.tableView);
+}
+
+- (double)fixedCellHeight {
+    if (!DYYYFullscreenVideoFullscreenOn()) return %orig;
+    UITableView *table = self.tableView;
+    DYYYFullscreenPrepareDetailTable(self, table);
+    double nativeHeight = %orig;
+    return DYYYFullscreenDetailRowHeight(table, nativeHeight, &gDYYYFullscreenDKDetailFixedStats);
+}
+
+- (double)cellHeightAtIndex:(long long)index {
+    if (!DYYYFullscreenVideoFullscreenOn()) return %orig;
+    UITableView *table = self.tableView;
+    DYYYFullscreenPrepareDetailTable(self, table);
+    double nativeHeight = %orig;
+    return DYYYFullscreenDetailRowHeight(table, nativeHeight, &gDYYYFullscreenDKDetailIndexStats);
+}
+
+- (double)tableView:(UITableView *)table heightForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (!DYYYFullscreenVideoFullscreenOn()) return %orig;
+    DYYYFullscreenPrepareDetailTable(self, table);
+    double nativeHeight = %orig;
+    return DYYYFullscreenDetailRowHeight(table, nativeHeight, &gDYYYFullscreenDKDetailRowStats);
+}
+
+- (double)contentOffsetYForCellAtIndex:(long long)index {
+    if (DYYYFullscreenVideoFullscreenOn()) DYYYFullscreenPrepareDetailTable(self, self.tableView);
+    return %orig;
+}
+
+- (void)adjustTableViewHeightForTargetIndex:(long long)index {
+    if (DYYYFullscreenVideoFullscreenOn()) DYYYFullscreenPrepareDetailTable(self, self.tableView);
+    %orig;
+    if (DYYYFullscreenVideoFullscreenOn()) DYYYFullscreenPrepareDetailTable(self, self.tableView);
+}
+
+%end
+
+%end
+
+#pragma mark - VideoPageChrome
+
+%group DYYYFullscreenVideoPageChromeHooks
+
+static const CGFloat kDYYYFullscreenSignatureTolerance = 0.5;
+
+static Class DYYYFullscreenChromeMergeClass(void) {
+    static Class cls;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cls = NSClassFromString(@"AWEDPlayerViewController_Merge");
+    });
+    return cls;
+}
+
+#pragma mark - 全屏目标判定
+
+static AWEDPlayerViewController_Merge *DYYYFullscreenMergeForView(UIView *view) {
+    Class mergeCls = DYYYFullscreenChromeMergeClass();
+    if (!mergeCls) return nil;
+
+    UIResponder *responder = view.nextResponder;
+    for (NSUInteger i = 0; responder && i < 40; i++) {
+        if ([responder isKindOfClass:mergeCls]) {
+            return (AWEDPlayerViewController_Merge *)responder;
+        }
+        responder = responder.nextResponder;
+    }
+    return nil;
+}
+
+// 底部渐变要不要拉伸，取决于这条视频的容器有没有被钉得比自然高度更高——只有详情页那几页
+// 会出现这种情况（首页/朋友页靠撑高 feed 表，渐变本来就在满高容器里）。
+static BOOL DYYYFullscreenMergeIsStretchedTarget(AWEDPlayerViewController_Merge *merge) {
+    if (!merge || !merge.isViewLoaded) return NO;
+
+    UIView *view = merge.view;
+    CGRect target = DYYYFullscreenVideoContainerTargetFrame(view);
+    if (CGRectIsNull(target) || !view.superview) return NO;
+    return CGRectGetHeight(target)
+        > CGRectGetHeight(view.superview.bounds) + kDYYYFullscreenSignatureTolerance;
+}
+
+#pragma mark - 视频容器重钉
+
+static BOOL DYYYFullscreenPinMergeToTarget(UIViewController *merge) {
+    UIView *view = merge.viewIfLoaded;
+    if (!view) return NO;
+
+    CGRect target = DYYYFullscreenVideoContainerTargetFrame(view);
+    if (CGRectIsNull(target) || DYYYFullscreenRectsClose(view.frame, target)) return NO;
+
+    view.frame = target;
+    return YES;
+}
+
+%hook AWEDPlayerViewController_Merge
+
+- (void)willDisplay {
+    %orig;
+    DYYYFullscreenPinMergeToTarget(self);
+}
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    DYYYFullscreenPinMergeToTarget(self);
+}
+
+// 抖音展开评论区时靠这里把视频缩成小窗。两个开关任一开着，容器都由我们钉着，
+// 缩放只会让玻璃背后只剩黑底、并留下顶部那条黑遮罩，一律压掉。
+- (void)videoDidShrink {
+    if (!DYYYFullscreenVideoFullscreenOn() && !DYYYFullscreenCommentFreezeOn()) {
+        %orig;
+        return;
+    }
+
+    UIView *gradient = self.gradientBackgroundView;
+    if (gradient && gradient.alpha < 1.0) {
+        gradient.alpha = 1.0;
+    }
+}
+
+%end
+
+#pragma mark - 背景延伸至底栏
+
+static char kDYYYFullscreenBackdropAppliedKey;    // 挂内容控制器：是否接管过
+static char kDYYYFullscreenCellBackdropKey;       // 挂承载视图：原背景色
+
+// 内容下方那块空区由哪一层兜住，各页不同（好友页是 Cell contentView，搜索页是铺满且不透明的
+// CellVC.view）。故动态求：从内容根往上，第一个高度超过它底边的祖先才是会露出来的那层。
+static UIView *DYYYFullscreenBackdropCanvas(UIView *anchor) {
+    UIView *contentView = [DYYYUtils fullscreenCellContentView:anchor];
+    if (!contentView) return nil;
+
+    for (UIView *ancestor = anchor.superview; ancestor; ancestor = ancestor.superview) {
+        CGRect rect = [anchor convertRect:anchor.bounds toView:ancestor];
+        if (CGRectGetHeight(ancestor.bounds)
+            > CGRectGetMaxY(rect) + kDYYYFullscreenSignatureTolerance) {
+            return ancestor;
+        }
+        if (ancestor == contentView) break;
+    }
+    return nil;
+}
+
+// 承载层会随页面/布局变化，按标记回收，不假设它是哪一个。
+static void DYYYFullscreenRestoreBackdrop(UIView *anchor, UIView *except) {
+    UIView *ancestor = anchor.superview;
+    for (NSUInteger i = 0; ancestor && i < 12; i++, ancestor = ancestor.superview) {
+        if (ancestor == except) continue;
+
+        id baseline = objc_getAssociatedObject(ancestor, &kDYYYFullscreenCellBackdropKey);
+        if (!baseline) continue;
+
+        ancestor.backgroundColor =
+            baseline == [NSNull null] ? nil : (UIColor *)baseline;
+        objc_setAssociatedObject(
+            ancestor,
+            &kDYYYFullscreenCellBackdropKey,
+            nil,
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC
+        );
+    }
+}
+
+// 其他比例视频：把 playerBackgroundView 的色涂到 anchor 下方会露出来的祖先上。
+// owner 记「接管过没有」；color 为 nil 表示本条不需要延伸。图文不走这里——它钉的是
+// AWEKnowledgeGradientView 自身高度（见下方），不取样另涂。
+static void DYYYFullscreenSyncBackdrop(id owner, UIView *anchor, UIColor *color) {
+    BOOL applied = objc_getAssociatedObject(owner, &kDYYYFullscreenBackdropAppliedKey) != nil;
+    // 绝大多数内容没有原生背景，这里直接退出，不做任何链式遍历。
+    if (!anchor || (!color && !applied)) return;
+
+    UIView *canvas = (color && DYYYFullscreenVideoFullscreenOn()) ? DYYYFullscreenBackdropCanvas(anchor) : nil;
+
+    DYYYFullscreenRestoreBackdrop(anchor, canvas);
+    if (!canvas) {
+        objc_setAssociatedObject(owner, &kDYYYFullscreenBackdropAppliedKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
+
+    if (!objc_getAssociatedObject(canvas, &kDYYYFullscreenCellBackdropKey)) {
+        objc_setAssociatedObject(canvas, &kDYYYFullscreenCellBackdropKey,
+                                 canvas.backgroundColor ?: (id)[NSNull null],
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (![canvas.backgroundColor isEqual:color]) {
+        canvas.backgroundColor = color;
+    }
+    objc_setAssociatedObject(owner, &kDYYYFullscreenBackdropAppliedKey, @YES,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+// 抖音把横屏智能背景色画在 playerBackgroundView 上；该色在首帧渲染出图后才算出来，
+// 因此同步点必须是抖音自己落色的时刻，而不是 setModel:/setFrame: 这类首帧之前的入口。
+// 仅当背景层确实挂在视图树上并可见时才算「抖音画了背景」，避免跟随已摘除的残留层。
+static UIColor *DYYYFullscreenPlayerBackdropColor(AWEPlayVideoViewController *controller) {
+    UIView *backdrop = controller.playerBackgroundView;
+    return (backdrop.superview && !backdrop.hidden) ? backdrop.backgroundColor : nil;
+}
+
+static Class DYYYFullscreenRichContentContainerClass(void) {
+    static Class cls;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cls = NSClassFromString(@"RichContentContainerViewController");
+    });
+    return cls;
+}
+
+// 图文 cell 内仍嵌着一套 Merge/PlayVideo（alpha=0）。它与 RichContent 共用祖先链；
+// 若让嵌套播放器继续 DYYYFullscreenSyncBackdrop，会用黑底或 restore 把图文渐变末色清掉，
+// 表现就是「偶发」底栏与图文背景不统一（beta5 导出：同页 contentView 有时透明有时已涂色）。
+static BOOL DYYYFullscreenIsUnderRichContent(UIViewController *controller) {
+    Class richCls = DYYYFullscreenRichContentContainerClass();
+    if (!richCls) return NO;
+    for (NSUInteger i = 0; controller && i < 12; i++) {
+        if ([controller isKindOfClass:richCls]) return YES;
+        controller = controller.parentViewController;
+    }
+    return NO;
+}
+
+%hook AWEPlayVideoViewController
+
+- (void)setPlayerBackgroundView:(UIView *)backgroundView {
+    %orig;
+    if (DYYYFullscreenIsUnderRichContent(self)) return;
+    DYYYFullscreenSyncBackdrop(self, self.viewIfLoaded, DYYYFullscreenPlayerBackdropColor(self));
+}
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    if (DYYYFullscreenIsUnderRichContent(self)) return;
+    DYYYFullscreenSyncBackdrop(self, self.viewIfLoaded, DYYYFullscreenPlayerBackdropColor(self));
+}
+
+%end
+
+#pragma mark - 图文
+
+static NSHashTable<UIView *> *gDYYYFullscreenDKManagedVisualViews;
+static char kDYYYFullscreenRichClipKey;
+static char kDYYYFullscreenKnowledgeTransformKey;
+static char kDYYYFullscreenRichGradientTransformKey;
+static char kDYYYFullscreenVideoGradientTransformKey;
+static char kDYYYFullscreenLiveChromeTransformKey;
+
+// center/bounds/anchorPoint 不受 transform 影响，可据此还原应用 transform 前的几何。
+static CGRect DYYYFullscreenIdentityFrameInSuperview(UIView *view) {
+    CGFloat width = CGRectGetWidth(view.bounds);
+    CGFloat height = CGRectGetHeight(view.bounds);
+    CGFloat minX = view.center.x - width * view.layer.anchorPoint.x;
+    CGFloat minY = view.center.y - height * view.layer.anchorPoint.y;
+    return CGRectMake(minX, minY, width, height);
+}
+
+// 只接管原本没有 transform 的目标；首次修改时保存原值，恢复时不影响其他功能的状态。
+static BOOL DYYYFullscreenApplyVerticalStretch(
+    UIView *view,
+    const void *baselineKey,
+    CGFloat top,
+    CGFloat targetBottom
+) {
+    if (!view) return NO;
+
+    CGFloat height = CGRectGetHeight(view.bounds);
+    if (height <= 0.0 || targetBottom <= top + height + kDYYYFullscreenSignatureTolerance) {
+        return NO;
+    }
+
+    CGFloat scaleY = (targetBottom - top) / height;
+    if (scaleY <= 1.0 + 1e-4) return NO;
+
+    NSValue *baseline = objc_getAssociatedObject(view, baselineKey);
+    if (!baseline) {
+        if (!CGAffineTransformIsIdentity(view.transform)) return NO;
+        baseline = [NSValue valueWithCGAffineTransform:view.transform];
+        objc_setAssociatedObject(view, baselineKey, baseline,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    CGAffineTransform transform = CGAffineTransformMake(
+        1.0, 0.0, 0.0, scaleY, 0.0, (height / 2.0) * (scaleY - 1.0));
+    if (!CGAffineTransformEqualToTransform(view.transform, transform)) {
+        view.transform = transform;
+    }
+    return YES;
+}
+
+// 纵向平移，用于把被撑高顶下去的 chrome 抬回原位。与上面的拉伸同一套接管规则：
+// 只接管原本没有 transform 的目标（抖音自己在动它就让开），首次接管时存下原值。
+static BOOL DYYYFullscreenApplyVerticalLift(UIView *view, const void *baselineKey, CGFloat lift) {
+    if (!view || lift <= kDYYYFullscreenSignatureTolerance) return NO;
+
+    NSValue *baseline = objc_getAssociatedObject(view, baselineKey);
+    if (!baseline) {
+        if (!CGAffineTransformIsIdentity(view.transform)) return NO;
+        baseline = [NSValue valueWithCGAffineTransform:view.transform];
+        objc_setAssociatedObject(view, baselineKey, baseline,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    CGAffineTransform transform = CGAffineTransformMakeTranslation(0.0, -lift);
+    if (!CGAffineTransformEqualToTransform(view.transform, transform)) {
+        view.transform = transform;
+    }
+    return YES;
+}
+
+static void DYYYFullscreenRestoreTransformBaseline(UIView *view, const void *baselineKey) {
+    NSValue *baseline = objc_getAssociatedObject(view, baselineKey);
+    if (!baseline) return;
+
+    view.transform = baseline.CGAffineTransformValue;
+    objc_setAssociatedObject(view, baselineKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+// 图文向 Cell 底部溢出时，只解除真实阻挡它的裁剪层；原本不裁剪的视图不接管。
+static void DYYYFullscreenAllowRichOverflow(UIView *view) {
+    if (!view) return;
+
+    if (!objc_getAssociatedObject(view, &kDYYYFullscreenRichClipKey)) {
+        if (!view.clipsToBounds) return;
+        objc_setAssociatedObject(view, &kDYYYFullscreenRichClipKey, @YES,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [gDYYYFullscreenDKManagedVisualViews addObject:view];
+    }
+    if (view.clipsToBounds) view.clipsToBounds = NO;
+}
+
+static void DYYYFullscreenRestoreRichOverflow(UIView *view) {
+    if (!objc_getAssociatedObject(view, &kDYYYFullscreenRichClipKey)) return;
+
+    view.clipsToBounds = YES;
+    objc_setAssociatedObject(view, &kDYYYFullscreenRichClipKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static Class DYYYFullscreenKnowledgeGradientClass(void) {
+    static Class cls;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cls = NSClassFromString(@"AWEKnowledgeGradientView");
+    });
+    return cls;
+}
+
+static void DYYYFullscreenSyncRichClips(UIView *view) {
+    if (!view) return;
+
+    CGFloat full = DYYYFullscreenVideoFullscreenOn() ? [DYYYUtils fullscreenCellHeight:view] : 0.0;
+    if (full > CGRectGetHeight(view.bounds) + kDYYYFullscreenSignatureTolerance) {
+        DYYYFullscreenAllowRichOverflow(view);
+        return;
+    }
+
+    DYYYFullscreenRestoreRichOverflow(view);
+}
+
+static void DYYYFullscreenSyncKnowledgeGradientStretch(UIView *gradient) {
+    if (!gradient) return;
+
+    CGFloat height = CGRectGetHeight(gradient.bounds);
+    CGFloat full = DYYYFullscreenVideoFullscreenOn() ? [DYYYUtils fullscreenCellHeight:gradient] : 0.0;
+
+    if (height > 0.0 && full > height + kDYYYFullscreenSignatureTolerance
+        && DYYYFullscreenApplyVerticalStretch(
+            gradient,
+            &kDYYYFullscreenKnowledgeTransformKey,
+            0.0,
+            full
+        )) {
+        [gDYYYFullscreenDKManagedVisualViews addObject:gradient];
+        return;
+    }
+
+    DYYYFullscreenRestoreTransformBaseline(gradient, &kDYYYFullscreenKnowledgeTransformKey);
+}
+
+%hook RichContentContainerViewController
+
+- (void)updateShrinkState:(BOOL)shrink insets:(UIEdgeInsets)insets animated:(BOOL)animated {
+    // 抑制时一律不调 %orig：class-dump 把 insets 折叠成 (struct)，真实类型只能按参数名推断，
+    // 不重新编组它就不依赖这个推断；放行走裸 %orig，Logos 原样透传实参。
+    if (shrink && (DYYYFullscreenVideoFullscreenOn() || DYYYFullscreenCommentFreezeOn())) return;
+    %orig;
+}
+
+- (void)updateShrinkState:(BOOL)shrink
+                   insets:(UIEdgeInsets)insets
+                 animated:(BOOL)animated
+        animationDuration:(double)duration {
+    if (shrink && (DYYYFullscreenVideoFullscreenOn() || DYYYFullscreenCommentFreezeOn())) return;
+    %orig;
+}
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    DYYYFullscreenSyncRichClips(self.viewIfLoaded);
+}
+
+%end
+
+%hook AWEKnowledgeGradientView
+
+- (void)layoutSubviews {
+    %orig;
+    DYYYFullscreenSyncKnowledgeGradientStretch(self);
+}
+
+%end
+
+#pragma mark - 评论态 HUD 顶部遮罩
+
+// 评论展开时抖音会在 HUD 顶部现场插入一条「安全区高 × 满宽」的纯黑遮罩，
+// 它是「视频缩小」态的产物，被强钉满屏的视频顶上去就成了黑边。
+static char kDYYYFullscreenStatusBarCoverHiddenKey;
+
+// 遮罩的高度是**窗口**安全区高，尺子也必须取窗口的：HUD 根视图在 table cell 里，它自己的安全区
+// 随 cell 在滚动视图中的位置变化，滑到不覆盖窗口顶部安全区的位置就是 0，签名会整条失配。
+CGFloat DYYYFullscreenHUDStatusBarCoverHeight(UIView *hudView) {
+    UIWindow *window = hudView.window;
+    return window ? window.safeAreaInsets.top : hudView.safeAreaInsets.top;
+}
+
+static UIView *DYYYFullscreenFindHUDStatusBarCover(UIView *hudView) {
+    CGFloat safeTop = DYYYFullscreenHUDStatusBarCoverHeight(hudView);
+    CGFloat width = CGRectGetWidth(hudView.bounds);
+    if (safeTop <= 1.0 || width <= 0.0) return nil;
+
+    for (UIView *view in hudView.subviews) {
+        if (object_getClass(view) != [UIView class]) continue;
+        if (!view.opaque || view.hidden) continue;
+
+        CGRect frame = view.frame;
+        if (fabs(CGRectGetMinX(frame)) > 1.0
+            || fabs(CGRectGetMinY(frame)) > 1.0
+            || fabs(CGRectGetWidth(frame) - width) > 1.0
+            || fabs(CGRectGetHeight(frame) - safeTop) > 2.0) {
+            continue;
+        }
+        if ([DYYYUtils fullscreenColorIsOpaqueBlack:view.backgroundColor]) return view;
+    }
+    return nil;
+}
+
+// 判据就是两个开关本身：这条遮罩只在评论展开时出现，而那一刻视频容器必被其中一个钉住，
+// 遮罩就成了纯粹的黑边。额外要求「找得到 Merge 且比例达标」会让横屏永远留着黑边。
+void DYYYFullscreenHUDStatusBarCoverSync(UIViewController *interaction) {
+    UIView *hudView = interaction.viewIfLoaded;
+    if (!hudView) return;
+
+    if (DYYYFullscreenVideoFullscreenOn() || DYYYFullscreenCommentFreezeOn()) {
+        UIView *cover = DYYYFullscreenFindHUDStatusBarCover(hudView);
+        if (cover) {
+            cover.hidden = YES;
+            objc_setAssociatedObject(
+                cover,
+                &kDYYYFullscreenStatusBarCoverHiddenKey,
+                @YES,
+                OBJC_ASSOCIATION_RETAIN_NONATOMIC
+            );
+        }
+        return;
+    }
+
+    for (UIView *view in hudView.subviews) {
+        if (!objc_getAssociatedObject(view, &kDYYYFullscreenStatusBarCoverHiddenKey)) continue;
+        view.hidden = NO;
+        objc_setAssociatedObject(
+            view,
+            &kDYYYFullscreenStatusBarCoverHiddenKey,
+            nil,
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC
+        );
+    }
+}
+
+// DYYYFullscreenVideoFeedTable.xm 也在同一个方法上挂了一层（HUD 高度的布局后补正），两处分属两个功能、
+// 各自跟着自己的模块走，串联生效，互不依赖。
+%hook AWEPlayInteractionViewController
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    DYYYFullscreenHUDStatusBarCoverSync(self);
+}
+
+%end
+
+#pragma mark - 底部压暗渐变
+
+%hook AWEGradientView
+
+- (void)layoutSubviews {
+    %orig;
+
+    // ① 视频：Merge 被钉得比父视图高时，容器内非贴底的压暗跟着撑满（旧逻辑，保留）。
+    AWEDPlayerViewController_Merge *merge = DYYYFullscreenMergeForView(self);
+    if (DYYYFullscreenMergeIsStretchedTarget(merge)) {
+        UIView *container = self.superview;
+        CGFloat height = CGRectGetHeight(self.bounds);
+        if (container && height > 0.0) {
+            CGFloat top = self.center.y - height / 2.0;
+            CGFloat containerHeight = CGRectGetHeight(container.bounds);
+            if (top > 1.0 && top + height < containerHeight - 1.0) {
+                if (DYYYFullscreenApplyVerticalStretch(
+                    self,
+                    &kDYYYFullscreenVideoGradientTransformKey,
+                    top,
+                    containerHeight
+                )) {
+                    [gDYYYFullscreenDKManagedVisualViews addObject:self];
+                    return;
+                }
+            }
+        }
+    }
+
+    DYYYFullscreenRestoreTransformBaseline(self, &kDYYYFullscreenVideoGradientTransformKey);
+}
+
+%end
+
+static Class DYYYFullscreenGradientClass(void) {
+    static Class cls;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cls = NSClassFromString(@"AWEGradientView");
+    });
+    return cls;
+}
+
+// 图文贴底压暗的结构签名：全宽、贴父底、顶边不在父顶。尺寸随设备和内容布局动态变化。
+static BOOL DYYYFullscreenIsRichBottomGradient(UIView *view) {
+    Class gradientCls = DYYYFullscreenGradientClass();
+    UIView *parent = view.superview;
+    if (!gradientCls || !parent || view.hidden || view.alpha <= 0.01
+        || ![view isKindOfClass:gradientCls]) {
+        return NO;
+    }
+
+    CGFloat parentWidth = CGRectGetWidth(parent.bounds);
+    CGFloat parentHeight = CGRectGetHeight(parent.bounds);
+    if (parentWidth <= 0.0 || parentHeight <= 0.0) return NO;
+
+    CGRect frame = DYYYFullscreenIdentityFrameInSuperview(view);
+    CGFloat tolerance = MAX(kDYYYFullscreenSignatureTolerance, 1.0);
+    return fabs(CGRectGetMinX(frame)) <= tolerance
+        && fabs(CGRectGetWidth(frame) - parentWidth) <= tolerance
+        && fabs(CGRectGetMaxY(frame) - parentHeight) <= tolerance
+        && CGRectGetMinY(frame) > tolerance;
+}
+
+static void DYYYFullscreenCollectRichBottomGradients(UIView *root, NSMutableArray<UIView *> *output) {
+    for (UIView *subview in root.subviews) {
+        if (subview.hidden || subview.alpha <= 0.01) continue;
+        if (DYYYFullscreenIsRichBottomGradient(subview)) {
+            [output addObject:subview];
+            continue;
+        }
+        DYYYFullscreenCollectRichBottomGradients(subview, output);
+    }
+}
+
+static NSArray<UIView *> *DYYYFullscreenRichBottomGradients(
+    AWEStoryContainerCollectionView *collection
+) {
+    NSMutableArray<UIView *> *gradients = [NSMutableArray array];
+    for (UICollectionViewCell *cell in collection.visibleCells) {
+        DYYYFullscreenCollectRichBottomGradients(cell, gradients);
+    }
+    return gradients;
+}
+
+static BOOL DYYYFullscreenViewIsInCollection(UIView *view, UIView *collection) {
+    return view == collection || [view isDescendantOfView:collection];
+}
+
+static void DYYYFullscreenRestoreUnusedRichCollectionState(
+    AWEStoryContainerCollectionView *collection,
+    NSSet<UIView *> *activeGradients,
+    NSSet<UIView *> *activeClipViews
+) {
+    for (UIView *view in gDYYYFullscreenDKManagedVisualViews.allObjects) {
+        if (!DYYYFullscreenViewIsInCollection(view, collection)) continue;
+
+        if (objc_getAssociatedObject(view, &kDYYYFullscreenRichGradientTransformKey)
+            && ![activeGradients containsObject:view]) {
+            DYYYFullscreenRestoreTransformBaseline(view, &kDYYYFullscreenRichGradientTransformKey);
+        }
+        if (objc_getAssociatedObject(view, &kDYYYFullscreenRichClipKey)
+            && ![activeClipViews containsObject:view]) {
+            DYYYFullscreenRestoreRichOverflow(view);
+        }
+    }
+}
+
+static void DYYYFullscreenSyncRichCollection(AWEStoryContainerCollectionView *collection) {
+    CGFloat contentHeight = CGRectGetHeight(collection.bounds);
+    CGFloat fullHeight = DYYYFullscreenVideoFullscreenOn() ? [DYYYUtils fullscreenCellHeight:collection] : 0.0;
+    if (contentHeight <= 0.0
+        || fullHeight <= contentHeight + kDYYYFullscreenSignatureTolerance) {
+        DYYYFullscreenRestoreUnusedRichCollectionState(collection, [NSSet set], [NSSet set]);
+        return;
+    }
+
+    NSMutableSet<UIView *> *activeGradients = [NSMutableSet set];
+    NSMutableSet<UIView *> *activeClipViews = [NSMutableSet set];
+    for (UIView *gradient in DYYYFullscreenRichBottomGradients(collection)) {
+        UIView *contentView = [DYYYUtils fullscreenCellContentView:gradient];
+        UIView *parent = gradient.superview;
+        if (!contentView || !parent || ![gradient isDescendantOfView:collection]) continue;
+
+        CGRect identityFrame = DYYYFullscreenIdentityFrameInSuperview(gradient);
+        CGFloat top = [parent convertPoint:identityFrame.origin toView:contentView].y;
+        if (!DYYYFullscreenApplyVerticalStretch(
+            gradient,
+            &kDYYYFullscreenRichGradientTransformKey,
+            top,
+            fullHeight
+        )) {
+            continue;
+        }
+
+        [gDYYYFullscreenDKManagedVisualViews addObject:gradient];
+        [activeGradients addObject:gradient];
+
+        for (UIView *ancestor = parent; ancestor; ancestor = ancestor.superview) {
+            if (ancestor.clipsToBounds
+                || objc_getAssociatedObject(ancestor, &kDYYYFullscreenRichClipKey)) {
+                DYYYFullscreenAllowRichOverflow(ancestor);
+                [activeClipViews addObject:ancestor];
+            }
+            if (ancestor == collection) break;
+        }
+    }
+
+    DYYYFullscreenRestoreUnusedRichCollectionState(collection, activeGradients, activeClipViews);
+}
+
+%hook AWEStoryContainerCollectionView
+
+- (void)layoutSubviews {
+    %orig;
+    DYYYFullscreenSyncRichCollection(self);
+}
+
+%end
+
+#pragma mark - 直播预览 HUD
+
+static CGFloat DYYYFullscreenLiveChromeLift(UIView *container) {
+    NSNumber *original = DYYYFullscreenVideoFeedTableOriginalHeight(DYYYFullscreenFeedTableForView(container));
+    UIView *contentView = [DYYYUtils fullscreenCellContentView:container];
+    if (!original || !contentView) return 0.0;
+
+    CGFloat full = CGRectGetHeight(contentView.bounds);
+    if (CGRectGetHeight(container.bounds) < full - kDYYYFullscreenSignatureTolerance) return 0.0;
+    return full - original.doubleValue;
+}
+
+// 目标底边在**容器**坐标里的位置。取 identity frame，免得自己叠上去的位移污染判定。
+static CGFloat DYYYFullscreenLiveChromeBottom(UIView *view, UIView *container) {
+    CGRect frame = DYYYFullscreenIdentityFrameInSuperview(view);
+    return [view.superview convertPoint:CGPointMake(0.0, CGRectGetMaxY(frame))
+                                 toView:container].y;
+}
+
+// 暗水印贴底但留了 8pt 边距，只在它确实落进撑出来的那一段里才抬——它与 chrome 不在同一槽位，
+// 位置由 IESLive 直接排，不跟着控制层走。
+static BOOL DYYYFullscreenLiveWatermarkNeedsLift(UIImageView *watermark, UIView *container, CGFloat lift) {
+    if (!watermark || watermark.hidden || lift <= kDYYYFullscreenSignatureTolerance) return NO;
+    return DYYYFullscreenLiveChromeBottom(watermark, container)
+        > CGRectGetHeight(container.bounds) - lift + kDYYYFullscreenSignatureTolerance;
+}
+
+// 该抬就抬、不该抬就还原，两个槽位共用。幂等：值没变不写。
+static void DYYYFullscreenApplyLiveLift(UIView *target, CGFloat lift, BOOL wanted) {
+    if (!target) return;
+
+    if (wanted && DYYYFullscreenApplyVerticalLift(target, &kDYYYFullscreenLiveChromeTransformKey, lift)) {
+        [gDYYYFullscreenDKManagedVisualViews addObject:target];
+        return;
+    }
+    DYYYFullscreenRestoreTransformBaseline(target, &kDYYYFullscreenLiveChromeTransformKey);
+}
+
+// 位移为 0（表本就满高，或容器还没跟着 cell 长高）时两个槽位都走还原分支，没接管过就是空转。
+// 目标是两个具名属性、没有遍历可省，所以不再挂「接管过没有」的标记来提前退出。
+static void DYYYFullscreenSyncLiveChrome(AWELivePreStream4LayerContainerView *container) {
+
+    CGFloat lift = DYYYFullscreenVideoFullscreenOn() ? DYYYFullscreenLiveChromeLift(container) : 0.0;
+    UIImageView *watermark = container.bottomDarkWatermark;
+
+    DYYYFullscreenApplyLiveLift(container.controlContainer, lift, lift > kDYYYFullscreenSignatureTolerance);
+    DYYYFullscreenApplyLiveLift(watermark, lift, DYYYFullscreenLiveWatermarkNeedsLift(watermark, container, lift));
+}
+
+// 抬升目标逐个给出 identity frame 与实际底边：identity 是抖音排的位置，实际底边是抬完的结果。
+
+%hook AWELivePreStream4LayerContainerView
+
+- (void)layoutSubviews {
+    %orig;
+    DYYYFullscreenSyncLiveChrome(self);
+}
+
+%end
+
+static void DYYYFullscreenPageChromeVisualRestore(void) {
+    for (UIView *view in gDYYYFullscreenDKManagedVisualViews.allObjects) {
+        DYYYFullscreenRestoreTransformBaseline(view, &kDYYYFullscreenKnowledgeTransformKey);
+        DYYYFullscreenRestoreTransformBaseline(view, &kDYYYFullscreenRichGradientTransformKey);
+        DYYYFullscreenRestoreTransformBaseline(view, &kDYYYFullscreenVideoGradientTransformKey);
+        DYYYFullscreenRestoreTransformBaseline(view, &kDYYYFullscreenLiveChromeTransformKey);
+        DYYYFullscreenRestoreRichOverflow(view);
+    }
+    [gDYYYFullscreenDKManagedVisualViews removeAllObjects];
+}
+
+// 设置项统一注册在 DYYYFullscreenVideoGeometry.xm，本文件只提供页面修饰这一套逻辑。
+
+%end
+
+#pragma mark - ProgressUnderline
+
+%group DYYYFullscreenProgressUnderlineHooks
+
+static const CGFloat kDYYYFullscreenUnderlineTolerance = 0.5;
+
+static char kDYYYFullscreenUnderlineColorKey;
+static char kDYYYFullscreenUnderlineOpaqueKey;
+
+static BOOL DYYYFullscreenIsUnderlineView(UIView *view, UIView *container) {
+    if (object_getClass(view) != [UIView class]) return NO;
+
+    UIColor *color = view.backgroundColor;
+    if (!color || CGColorGetAlpha(color.CGColor) < 0.99) return NO;
+
+    CGRect frame = view.frame;
+    CGFloat height = CGRectGetHeight(frame);
+    return height > 0.0
+        && height <= 2.0 + kDYYYFullscreenUnderlineTolerance
+        && fabs(CGRectGetMinX(frame)) <= kDYYYFullscreenUnderlineTolerance
+        && fabs(CGRectGetWidth(frame) - CGRectGetWidth(container.bounds)) <= kDYYYFullscreenUnderlineTolerance;
+}
+
+static void DYYYFullscreenClearUnderline(UIView *view) {
+    if (!objc_getAssociatedObject(view, &kDYYYFullscreenUnderlineColorKey)) {
+        objc_setAssociatedObject(view, &kDYYYFullscreenUnderlineColorKey, view.backgroundColor,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(view, &kDYYYFullscreenUnderlineOpaqueKey, @(view.opaque),
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    if (![view.backgroundColor isEqual:UIColor.clearColor]) {
+        view.backgroundColor = UIColor.clearColor;
+    }
+    if (view.opaque) view.opaque = NO;
+}
+
+static void DYYYFullscreenRestoreUnderline(UIView *view) {
+    UIColor *color = objc_getAssociatedObject(view, &kDYYYFullscreenUnderlineColorKey);
+    if (!color) return;
+
+    view.backgroundColor = color;
+    view.opaque = [objc_getAssociatedObject(view, &kDYYYFullscreenUnderlineOpaqueKey) boolValue];
+    objc_setAssociatedObject(view, &kDYYYFullscreenUnderlineColorKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(view, &kDYYYFullscreenUnderlineOpaqueKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+%hook AWEDPlayerProgressContainerView
+
+- (void)layoutSubviews {
+    %orig;
+
+    BOOL enabled = DYYYFullscreenVideoFullscreenOn();
+
+    for (UIView *view in self.subviews) {
+        // 已接管的视图只按开关决定去留：进度条收起时签名会漂移，据此还原会让黑边重现。
+        if (objc_getAssociatedObject(view, &kDYYYFullscreenUnderlineColorKey)) {
+            enabled ? DYYYFullscreenClearUnderline(view) : DYYYFullscreenRestoreUnderline(view);
+        } else if (enabled && DYYYFullscreenIsUnderlineView(view, self)) {
+            DYYYFullscreenClearUnderline(view);
+        }
+    }
+}
+
+%end
+
+%end
+
+#pragma mark - CommentFullBackdrop
+
+%group DYYYFullscreenCommentFullBackdropHooks
+
+static char kDYYYFullscreenBackdropPageKey;   // 全屏容器 → 垫回去的那一页的 view
+static char kDYYYFullscreenPanelColorKey;     // 全屏容器 view → 原底色（NSNull 表示原本就是 nil）
+
+// 最近一次补播的现场读数。
+
+// 在屏的全屏容器。用弱引用而不是计数：交互式返回中途取消会再发一次 viewDidAppear:
+// 而没有配对的 viewWillDisappear:，计数会一去不回。
+static __weak UIViewController *gDYYYFullscreenFullPanel = nil;
+// 底色拦截的总闸，与 kDYYYFullscreenBackdropPageKey 同生共死。用纯 BOOL 而不是读 gDYYYFullscreenFullPanel：
+// 后者是 __weak，取值要走 objc_loadWeakRetained，全局钩子里付不起这个开销。
+static BOOL gDYYYFullscreenBackdropAttached = NO;
+
+BOOL DYYYFullscreenCommentFullPanelOnScreen(void) {
+    return gDYYYFullscreenFullPanel != nil;
+}
+
+// 导航栈里本页下面那一页；本页不在栈里或已是栈底时返回 nil。
+static UIViewController *DYYYFullscreenPageBelowPanel(UIViewController *panel) {
+    NSArray<UIViewController *> *stack = panel.navigationController.viewControllers;
+    NSUInteger index = [stack indexOfObject:panel];
+    return (index == NSNotFound || index == 0) ? nil : stack[index - 1];
+}
+
+static void DYYYFullscreenAttachBackdrop(UIViewController *panel) {
+    if (!DYYYFullscreenCommentFreezeOn() || objc_getAssociatedObject(panel, &kDYYYFullscreenBackdropPageKey)) return;
+
+    UIView *panelView = panel.viewIfLoaded;
+    UIView *wrapper = panelView.superview;   // 承载本页的 wrapper
+    UIView *stage = wrapper.superview;       // 导航的转场舞台
+    UIView *page = DYYYFullscreenPageBelowPanel(panel).viewIfLoaded;
+    // 只接管「被导航摘下来的」那一页：还在栈里、view 还活着、但已不在任何层级。
+    if (!stage || !page || page.superview) return;
+
+    [stage insertSubview:page belowSubview:wrapper];
+    objc_setAssociatedObject(panel, &kDYYYFullscreenBackdropPageKey, page,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    // 垫上了才清底色：清了却没垫上只会更黑。
+    objc_setAssociatedObject(panelView, &kDYYYFullscreenPanelColorKey,
+                             panelView.backgroundColor ?: (id)[NSNull null],
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    panelView.backgroundColor = UIColor.clearColor;
+    panelView.opaque = NO;
+    gDYYYFullscreenBackdropAttached = YES;
+}
+
+static void DYYYFullscreenDetachBackdrop(UIViewController *panel) {
+    UIView *page = objc_getAssociatedObject(panel, &kDYYYFullscreenBackdropPageKey);
+    if (!page) return;
+    gDYYYFullscreenBackdropAttached = NO;
+
+    UIView *panelView = panel.viewIfLoaded;
+    id baseline = objc_getAssociatedObject(panelView, &kDYYYFullscreenPanelColorKey);
+    if (baseline) {
+        UIColor *color = (baseline == [NSNull null]) ? nil : (UIColor *)baseline;
+        panelView.backgroundColor = color;
+        // opaque 由记下的底色推出来，不额外留一份状态。
+        panelView.opaque = color && CGColorGetAlpha(color.CGColor) >= 0.99;
+        objc_setAssociatedObject(panelView, &kDYYYFullscreenPanelColorKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    [page removeFromSuperview];
+    objc_setAssociatedObject(panel, &kDYYYFullscreenBackdropPageKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+%hook UIView
+
+- (void)setBackgroundColor:(UIColor *)color {
+    if (gDYYYFullscreenBackdropAttached && color && CGColorGetAlpha(color.CGColor) >= 0.99
+        && objc_getAssociatedObject(self, &kDYYYFullscreenPanelColorKey)) {
+        // 记下最新的主题色：摘除时才还得回当前外观那一份，而不是进场时那一份。
+        objc_setAssociatedObject(self, &kDYYYFullscreenPanelColorKey, color, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        %orig(UIColor.clearColor);
+        return;
+    }
+    %orig;
+}
+
+%end
+
+%hook AWECommentFullScreenContainerViewController
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    // 转场已结束，此时插入不干扰动画；交互式返回中途取消会再走一次，与下面的摘除天然对称。
+    gDYYYFullscreenFullPanel = self;
+    DYYYFullscreenAttachBackdrop(self);
+    // 全屏态弹幕该回到抖音原生的隐藏；标记先于同步，判据才是新状态。
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    // 必须早于 %orig：pop 之后 UIKit 会把那一页放回它自己的 wrapper，得先还回原状。
+    gDYYYFullscreenFullPanel = nil;
+    DYYYFullscreenDetachBackdrop(self);
+    %orig;
+}
+
+%end
+
+%hook AWEPlayInteractionCommentPanelController
+
+- (BOOL)enableShowInnerPiPWhenFullScreen {
+    if (!DYYYFullscreenCommentFreezeOn()) return %orig;
+
+    return NO;
+}
+
+%end
+
+%hook AWEPlayVideoViewController
+
+- (void)playerWillLoopPlaying:(id)player {
+    %orig;
+    if (!DYYYFullscreenCommentFreezeOn() || !DYYYFullscreenCommentFullPanelOnScreen()) return;
+
+    AWEDPlayerViewController_Merge *merge = (AWEDPlayerViewController_Merge *)self.parentViewController;
+    if (![merge isKindOfClass:%c(AWEDPlayerViewController_Merge)]) return;
+
+    // 落到下一轮 runloop，才排在抖音自己那串同步监听之后；它自己续上了就不插手。
+    __weak AWEDPlayerViewController_Merge *weakMerge = merge;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        AWEDPlayerViewController_Merge *strongMerge = weakMerge;
+        if (!strongMerge || !DYYYFullscreenCommentFullPanelOnScreen() || [strongMerge isPlaying]) return;
+
+        if (DYYYFullscreenCommentFreezeOn()) [strongMerge play];
+    });
+}
+
+%end
+
+// 只数不拦，纯排查用：分辨「播放请求被拒」与「播起来之后又被停掉」，
+// 这正是 beta16 → beta17 花了两轮才分清的那个问题。
+
+%end
+
+#pragma mark - Hook 初始化
+
 %ctor {
+gDYYYFullscreenStretchedTables = [NSHashTable weakObjectsHashTable];
+    DYYYFullscreenVideoFullscreenRegisterRestore(DYYYFullscreenVideoFeedTableRestore);
+
+%init(DYYYFullscreenVideoFeedTableHooks);
+
+Class controllerClass = NSClassFromString(@"AWEAwemeDetailTableViewController");
+    SEL selectors[] = {
+        @selector(setupDetailTableView), @selector(viewWillLayoutSubviews),
+        @selector(fixedCellHeight), @selector(cellHeightAtIndex:),
+        @selector(tableView:heightForRowAtIndexPath:),
+        @selector(contentOffsetYForCellAtIndex:),
+        @selector(adjustTableViewHeightForTargetIndex:)
+    };
+    BOOL compatible = YES;
+    for (SEL selector : selectors) {
+        if (!class_getInstanceMethod(controllerClass, selector)) compatible = NO;
+    }
+    if (compatible) { %init(DYYYFullscreenVideoDetailTableHooks); }
+
+gDYYYFullscreenDKManagedVisualViews = [NSHashTable weakObjectsHashTable];
+    DYYYFullscreenVideoFullscreenRegisterRestore(DYYYFullscreenPageChromeVisualRestore);
+
+%init(DYYYFullscreenVideoPageChromeHooks);
+
+%init(DYYYFullscreenProgressUnderlineHooks);
+
+%init(DYYYFullscreenCommentFullBackdropHooks);
+
+    // 设置页和远程配置共用 defaults；关闭时执行上游的原高/transform 还原。
+    static id fullscreenDefaultsObserver;
+    __block BOOL fullscreenWasEnabled = DYYYFullscreenVideoFullscreenOn();
+    fullscreenDefaultsObserver = [NSNotificationCenter.defaultCenter
+        addObserverForName:NSUserDefaultsDidChangeNotification object:nil queue:nil
+        usingBlock:^(__unused NSNotification *note) {
+            // defaults 可在持有初始化锁的后台线程发通知，不能同步等待主线程。
+            dispatch_async(dispatch_get_main_queue(), ^{
+                BOOL enabled = DYYYFullscreenVideoFullscreenOn();
+                if (enabled == fullscreenWasEnabled) return;
+                fullscreenWasEnabled = enabled;
+                if (!enabled) {
+                    for (NSUInteger i = 0; i < gDYYYFullscreenRestoreCount; i++) gDYYYFullscreenRestoreHooks[i]();
+                }
+            });
+        }];
+
+if ([DYYYUtils liquidGlassAvailable]) {
+        %init(DYYYTabGlassGlassTabBarHooks);
+    }
+
+gDYYYCommentGlassGlassCarriers = [NSHashTable weakObjectsHashTable];
+    gDYYYCommentGlassClearedCovers = [NSHashTable weakObjectsHashTable];
+    gDYYYCommentGlassFoldMaskedViews = [NSHashTable weakObjectsHashTable];
+
+    if ([DYYYUtils liquidGlassAvailable]) {
+        %init(DYYYCommentGlassCommentGlassHooks);
+
+        if (NSClassFromString(@"AWECommentMiniEmoticonPanelView")) {
+            %init(DYYYCommentGlassCommentEmoticonHook);
+        }
+
+        if (NSClassFromString(@"AWEListKitMagicCollectionView") && DYYYCommentGlassFoldDisplayClass()) {
+            %init(DYYYCommentGlassCommentFoldHook);
+        }
+
+        Class searchPanel = NSClassFromString(@"AWECommentSearchViewController");
+        if ([searchPanel instancesRespondToSelector:@selector(obtainPanelColor)]) {
+            %init(DYYYCommentGlassCommentSearchPanelHook);
+        }
+
+        // 类或方法任一不在就不装：内部 generator 对不存在的方法会「新增」而不是「钩住」，
+        // 那样 %orig 会调进空实现。
+        Class abTest = NSClassFromString(@"AWECommentABTestSettings");
+        if ([abTest respondsToSelector:@selector(enableCommentRenderingOptimize:)]) {
+            %init(DYYYCommentGlassCommentRenderOptimizeHook);
+        }
+    }
+
+gDYYYNotificationGlassGlassCarriers = [NSHashTable weakObjectsHashTable];
+    gDYYYNotificationGlassContainers = [NSHashTable weakObjectsHashTable];
+    gDYYYNotificationGlassCommonViews = [NSHashTable weakObjectsHashTable];
+
+    if ([DYYYUtils liquidGlassAvailable]) {
+        %init(DYYYNotificationGlassInnerNotificationGlassHooks);
+    }
+
     [[NSUserDefaults standardUserDefaults] registerDefaults:@{
         @"DYYYDisableFeedNowPlayingInfo" : @YES,
         @"DYYYKeepUnpublishedVideo" : @NO
@@ -13259,17 +16349,6 @@ static void findTargetViewInView(UIView *view) {
         method_getArgumentType(livePageAppearMethod, 2, livePageArgumentType, sizeof(livePageArgumentType));
         if (livePageReturnType[0] == @encode(void)[0] && livePageArgumentType[0] == @encode(BOOL)[0]) {
             %init(DYYYLivePreStreamPageAppearGroup);
-        }
-    }
-
-    // 私有方法必须确实存在且返回 BOOL，旧版本签名不同则保留原生行为。
-    Class detailTableClass = objc_getClass("AWEAwemeDetailTableViewController");
-    Method fullscreenSlideMethod = class_getInstanceMethod(detailTableClass, @selector(p_enableFullScreenSlide));
-    char fullscreenReturnType[16] = {0};
-    if (fullscreenSlideMethod && method_getNumberOfArguments(fullscreenSlideMethod) == 2) {
-        method_getReturnType(fullscreenSlideMethod, fullscreenReturnType, sizeof(fullscreenReturnType));
-        if (fullscreenReturnType[0] == @encode(BOOL)[0]) {
-            %init(DYYYDetailFullscreenGroup);
         }
     }
 
@@ -13327,10 +16406,6 @@ static void findTargetViewInView(UIView *view) {
         Class incentivePendantClass = objc_getClass("AWEIncentiveSwiftImplDOUYINLite.IncentivePendantContainerView");
         if (incentivePendantClass) {
             %init(IncentivePendantGroup, AWEIncentiveSwiftImplDOUYINLite_IncentivePendantContainerView = incentivePendantClass);
-        }
-        Class imageContentClass = objc_getClass("BDMultiContentContainer.ImageContentView");
-        if (imageContentClass) {
-            %init(BDMultiContentImageViewGroup, BDMultiContentContainer_ImageContentView = imageContentClass);
         }
 
         // 动态获取 Swift 类并初始化对应的组

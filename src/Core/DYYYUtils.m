@@ -387,6 +387,137 @@ static BOOL DYYYUtilsWriteStaticImageToGIF(UIImage *image, NSURL *gifURL) {
 
 @implementation DYYYUtils
 
+#pragma mark - 视频全屏共用工具
++ (BOOL)fullscreenColorIsOpaqueBlack:(UIColor *)color {
+    if (!color) return NO;
+
+    CGFloat red = 0.0;
+    CGFloat green = 0.0;
+    CGFloat blue = 0.0;
+    CGFloat alpha = 0.0;
+    if ([color getRed:&red green:&green blue:&blue alpha:&alpha]) {
+        return red <= 0.02 && green <= 0.02 && blue <= 0.02 && alpha >= 0.98;
+    }
+
+    CGFloat white = 0.0;
+    if ([color getWhite:&white alpha:&alpha]) {
+        return white <= 0.02 && alpha >= 0.98;
+    }
+    return NO;
+}
+
+
++ (UIView *)fullscreenCellContentView:(UIView *)view {
+    static Class contentCls;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ contentCls = NSClassFromString(@"UITableViewCellContentView"); });
+    if (!contentCls) return nil;
+
+    for (NSUInteger i = 0; view && i < 12; i++) {
+        if ([view isKindOfClass:contentCls]) return view;
+        view = view.superview;
+    }
+    return nil;
+}
+
+
++ (CGFloat)fullscreenCellHeight:(UIView *)view {
+    UIView *content = [self fullscreenCellContentView:view.superview];
+    return content ? CGRectGetHeight(content.bounds) : 0.0;
+}
+
+
+#pragma mark - 液体玻璃（移植自 DYKiller，MIT 许可见 LICENSE）
++ (BOOL)liquidGlassAvailable {
+    if (@available(iOS 26.0, *)) return YES;
+    return NO;
+}
+
+static const CGFloat kDYYYLGGlassDarkTintAlpha = 0.30;
+
++ (UIColor *)liquidGlassTintForStyle:(UIUserInterfaceStyle)style {
+    if (style != UIUserInterfaceStyleDark) return nil;
+    return [UIColor colorWithWhite:0.0 alpha:kDYYYLGGlassDarkTintAlpha];
+}
+
+#pragma mark - 玻璃上的文字
+
+// 黑系判据的两个阈值：抖音标题色 #161823 明度 0.137、饱和度 0.37；
+// 同处的蓝色 #04498D 明度 0.553、粉色 #FE2C55 明度 0.996，按明度就能分开。
+static const CGFloat kDYYYLGGlassInkBrightness = 0.35;
+static const CGFloat kDYYYLGGlassInkSaturation = 0.50;
+
+// 遍历深度：通知横幅最深处是白槽 → 栈 → CommonView → 容器 → 栈 → 栈 → 标题项 → 文字，
+// 展开态还会更深，留出余量。
+static const NSUInteger kDYYYLGGlassInkDepth = 10;
+
+static char kDYYYLGInkOriginalKey;
+static char kDYYYLGInkAppliedKey;
+
++ (BOOL)liquidGlassColorIsInk:(UIColor *)color {
+    if (!color) return NO;
+
+    CGFloat hue = 0.0;
+    CGFloat saturation = 0.0;
+    CGFloat brightness = 0.0;
+    CGFloat alpha = 0.0;
+    if (![color getHue:&hue saturation:&saturation brightness:&brightness alpha:&alpha]) {
+        CGFloat white = 0.0;
+        if (![color getWhite:&white alpha:&alpha]) return NO;
+        saturation = 0.0;
+        brightness = white;
+    }
+    return alpha >= 0.5
+        && brightness <= kDYYYLGGlassInkBrightness
+        && saturation <= kDYYYLGGlassInkSaturation;
+}
+
+// 先按目标外观解析再判定：宿主那个色是静态还是动态都能得到正确结果。
++ (UIColor *)liquidGlassInkTextColor:(UIColor *)original clear:(BOOL)clear style:(UIUserInterfaceStyle)style {
+    if (!original) return nil;
+    UITraitCollection *traits = [UITraitCollection traitCollectionWithUserInterfaceStyle:style];
+    UIColor *resolved = [original resolvedColorWithTraitCollection:traits];
+    if (![DYYYUtils liquidGlassColorIsInk:resolved]) return original;
+    if (!clear && style != UIUserInterfaceStyleDark) return original;
+    return [UIColor colorWithWhite:1.0 alpha:CGColorGetAlpha(resolved.CGColor)];
+}
+
++ (void)walkLiquidGlassLabels:(UIView *)view depth:(NSUInteger)depth block:(void (^)(UILabel *label))block {
+    if (!view || depth > kDYYYLGGlassInkDepth) return;
+    if ([view isKindOfClass:[UIControl class]]) return;
+    if ([view isKindOfClass:[UILabel class]]) block((UILabel *)view);
+    for (UIView *child in view.subviews) [DYYYUtils walkLiquidGlassLabels:child depth:depth + 1 block:block];
+}
+
++ (void)applyLiquidGlassInkText:(UIView *)root clear:(BOOL)clear style:(UIUserInterfaceStyle)style {
+    [DYYYUtils walkLiquidGlassLabels:root depth:0 block:^(UILabel *label) {
+        UIColor *current = label.textColor;
+        UIColor *original = objc_getAssociatedObject(label, &kDYYYLGInkOriginalKey);
+        UIColor *applied = objc_getAssociatedObject(label, &kDYYYLGInkAppliedKey);
+        // 当前色既不是原色也不是我们写进去的，说明宿主改写过，重新记原色。
+        if (!original || (![current isEqual:original] && ![current isEqual:applied])) {
+            original = current;
+            objc_setAssociatedObject(label, &kDYYYLGInkOriginalKey,
+                                     original, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        UIColor *want = [DYYYUtils liquidGlassInkTextColor:original clear:clear style:style];
+        if (want && ![current isEqual:want]) label.textColor = want;
+        objc_setAssociatedObject(label, &kDYYYLGInkAppliedKey, want, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }];
+}
+
++ (void)restoreLiquidGlassInkText:(UIView *)root {
+    [DYYYUtils walkLiquidGlassLabels:root depth:0 block:^(UILabel *label) {
+        UIColor *original = objc_getAssociatedObject(label, &kDYYYLGInkOriginalKey);
+        if (!original) return;
+        label.textColor = original;
+        objc_setAssociatedObject(label, &kDYYYLGInkOriginalKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(label, &kDYYYLGInkAppliedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }];
+}
+
+
+
 static const void *kCurrentIPRequestCityCodeKey = &kCurrentIPRequestCityCodeKey;
 
 #pragma mark - Public Model Filtering Utilities (公共模型过滤工具)
@@ -878,62 +1009,9 @@ static void DYYYApplyDisplayLocationToLabel(UILabel *label, NSString *displayLoc
     return nil;
 }
 
-+ (BOOL)isAwemeDetailVideoController:(UIViewController *)controller {
-    if (!controller || ![NSThread isMainThread]) {
-        return NO;
-    }
 
-    Class detailCellClass = NSClassFromString(@"AWEAwemeDetailCellViewController");
-    Class detailTableClass = NSClassFromString(@"AWEAwemeDetailTableViewController");
-    Class searchTableClass = NSClassFromString(@"AWESearchVideoFeedTableViewController");
-    Class interactionClass = NSClassFromString(@"AWEPlayInteractionViewController");
-    UIViewController *owner = nil;
-    NSString *referString = nil;
-    if (interactionClass && [controller isKindOfClass:interactionClass] &&
-        [controller respondsToSelector:@selector(referString)]) {
-        referString = ((AWEPlayInteractionViewController *)controller).referString;
-        if ([controller respondsToSelector:@selector(awemeBaseViewController)]) {
-            owner = ((AWEPlayInteractionViewController *)controller).awemeBaseViewController;
-        }
-    } else if (detailTableClass && [controller isKindOfClass:detailTableClass] &&
-               [controller respondsToSelector:@selector(referString)]) {
-        referString = ((AWEAwemeDetailTableViewController *)controller).referString;
-    }
-    if ([referString hasPrefix:@"general_search"] || [referString hasPrefix:@"search"]) {
-        return NO;
-    }
 
-    // 搜索播放页继承详情列表且复用详情 cell，必须检查完整父链后才能确认归属。
-    // 两条父链各最多 8 层，不扫描子视图，也不持有页面或模型。
-    BOOL isDetailVideo = NO;
-    for (NSUInteger chain = 0; chain < 2; chain++) {
-        UIViewController *cursor = chain == 0 ? controller : owner;
-        for (NSUInteger depth = 0; cursor && depth < 8; depth++, cursor = cursor.parentViewController) {
-            if (searchTableClass && [cursor isKindOfClass:searchTableClass]) {
-                return NO;
-            }
-            if ((detailCellClass && [cursor isKindOfClass:detailCellClass]) ||
-                (detailTableClass && [cursor isKindOfClass:detailTableClass])) {
-                isDetailVideo = YES;
-            }
-        }
-    }
-    return isDetailVideo;
-}
 
-+ (CGRect)fullHeightFrame:(CGRect)frame inContainerBounds:(CGRect)containerBounds {
-    if (isfinite(containerBounds.origin.x) && isfinite(containerBounds.origin.y) &&
-        isfinite(containerBounds.size.width) && isfinite(containerBounds.size.height) &&
-        containerBounds.size.width > 0 && containerBounds.size.height > 0 &&
-        isfinite(frame.origin.x) && isfinite(frame.origin.y) &&
-        isfinite(frame.size.width) && isfinite(frame.size.height) && frame.size.height > 0 &&
-        fabs(frame.origin.x - containerBounds.origin.x) <= 0.5 &&
-        fabs(frame.origin.y - containerBounds.origin.y) <= 0.5 &&
-        fabs(frame.size.width - containerBounds.size.width) <= 0.5) {
-        frame.size.height = containerBounds.size.height;
-    }
-    return frame;
-}
 
 + (UIViewController *)findViewControllerOfClass:(Class)targetClass inViewController:(UIViewController *)vc {
     if (!targetClass || !vc)
@@ -2720,3 +2798,15 @@ id DYYYJSONSafeObject(id obj) {
     }
     return [obj description];
 }
+
+#pragma mark - 液体玻璃触摸反馈
+
+// 移植自 DYKiller，MIT 许可见 LICENSE。
+
+@implementation DYYYGlassFlexView
+- (UIView *)_flexInteractionGestureView {
+    UIView *source = self.flexSourceView;
+    if (source && source.window) return source;
+    return [super _flexInteractionGestureView];
+}
+@end

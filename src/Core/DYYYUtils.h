@@ -10,6 +10,14 @@ NS_ASSUME_NONNULL_BEGIN
 @class AVAssetTrack;
 
 @interface DYYYUtils : NSObject
++ (UIView *)fullscreenCellContentView:(UIView *)view;
++ (CGFloat)fullscreenCellHeight:(UIView *)view;
++ (BOOL)fullscreenColorIsOpaqueBlack:(UIColor *)color;
++ (BOOL)liquidGlassAvailable;
++ (UIColor *)liquidGlassTintForStyle:(UIUserInterfaceStyle)style;
++ (BOOL)liquidGlassColorIsInk:(UIColor *)color;
++ (void)applyLiquidGlassInkText:(UIView *)root clear:(BOOL)clear style:(UIUserInterfaceStyle)style;
++ (void)restoreLiquidGlassInkText:(UIView *)root;
 
 #pragma mark - Public Model Filtering Utilities (公共模型过滤工具)
 
@@ -52,10 +60,6 @@ NS_ASSUME_NONNULL_BEGIN
 + (UIViewController *)firstAvailableViewControllerFromView:(UIView *)view;
 + (UIViewController *)findViewControllerOfClass:(Class)targetClass inViewController:(UIViewController *)vc;
 
-/* 判断播放器/信息区是否属于喜欢、作品等视频详情列表。 */
-+ (BOOL)isAwemeDetailVideoController:(UIViewController *)controller;
-/* 仅对齐顶边且占满宽度的视图，统一为父容器的一屏高度。 */
-+ (CGRect)fullHeightFrame:(CGRect)frame inContainerBounds:(CGRect)containerBounds;
 
 + (UIResponder *)findAncestorResponderOfClass:(Class)targetClass fromView:(UIView *)view;
 

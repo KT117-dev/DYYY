@@ -66,6 +66,8 @@ typedef NS_ENUM(NSUInteger, DYEdgeMode) {
 @end
 
 @interface AWEVideoModel : NSObject
+@property (nonatomic, strong) NSNumber *width;
+@property (nonatomic, strong) NSNumber *height;
 @property(nonatomic, strong) AWEURLModel *playLowBitURL;
 @property(retain, nonatomic) AWEURLModel *playURL;
 @property(copy, nonatomic) NSArray *manualBitrateModels;
@@ -275,6 +277,8 @@ typedef NS_ENUM(NSUInteger, DYEdgeMode) {
 - (void)setEnableHDR:(BOOL)enableHDR;
 - (BOOL)awe_isCurrentVideoHDR;
 - (void)setPlayerLutFilter:(id)lutFilter HDRLutImage:(id)HDRLutImage;
+@property (nonatomic, strong) UIView *playerBackgroundView;
+- (void)playerWillLoopPlaying:(id)player;
 @end
 
 @interface AWELongPressPanelViewGroupModel : NSObject
@@ -509,12 +513,22 @@ typedef NS_ENUM(NSUInteger, DYEdgeMode) {
 @property(nonatomic, strong) AWEAwemeModel *model;
 @end
 
+@class AWEFeedTableView;
 @interface AWEFeedTableViewController : UIViewController
 - (void)setCurrentPlayIndex:(NSInteger)index;
 - (void)setIsViewAppearing:(BOOL)appearing;
+@property (nonatomic, strong) AWEFeedTableView *tableView;
+@property (nonatomic, strong) id dataController;
+@property (nonatomic, copy) NSString *referString;
+- (id)initWithType:(long long)type dataController:(id)data;
+- (void)setupFeedContainerWithType:(long long)type dataController:(id)data;
+- (NSString *)currentReferString;
 @end
 
-@interface AWEFeedTableView : UIView
+@interface AWEFeedDataSafeTableView : UITableView
+@end
+
+@interface AWEFeedTableView : AWEFeedDataSafeTableView
 @end
 
 @interface AWEAwemeDetailTableView : UITableView
@@ -555,7 +569,6 @@ typedef NS_ENUM(NSUInteger, DYEdgeMode) {
 @end
 
 @interface AWEBaseListViewController : UIViewController
-- (void)applyBlurEffectIfNeeded;
 - (UILabel *)findCommentLabel:(UIView *)view;
 @end
 
@@ -582,7 +595,7 @@ typedef NS_ENUM(NSUInteger, DYEdgeMode) {
 @interface AFDRecommendToFriendEntranceLabel : UILabel
 @end
 
-@interface AWEStoryContainerCollectionView : UIView
+@interface AWEStoryContainerCollectionView : UICollectionView
 @end
 
 @interface AWELiveNewPreStreamViewController : UIViewController
@@ -1025,10 +1038,6 @@ typedef NS_ENUM(NSUInteger, DYEdgeMode) {
 
 // 应用内推送容器
 @interface AWEInnerNotificationWindow : UIWindow
-- (void)setupBlurEffectForNotificationView;
-- (void)applyBlurEffectToView:(UIView *)containerView;
-- (void)setLabelsColorWhiteInView:(UIView *)view;
-- (void)clearBackgroundRecursivelyInView:(UIView *)view;
 @end
 
 @interface AWEFakeProgressSliderView : UIView
@@ -1329,6 +1338,15 @@ typedef NS_ENUM(NSUInteger, DYEdgeMode) {
 - (BOOL)p_enableFullScreenSlide;
 - (void)setCurrentIndex:(NSInteger)index;
 - (void)setIsViewAppearing:(BOOL)appearing;
+@property (nonatomic, strong) AWEAwemeDetailTableView *tableView;
+- (BOOL)canShowFixedBottomBar;
+- (void)setBottomBarHidden:(BOOL)hidden;
+- (NSString *)realReferString;
+- (void)setupDetailTableView;
+- (double)fixedCellHeight;
+- (double)cellHeightAtIndex:(long long)index;
+- (double)contentOffsetYForCellAtIndex:(long long)index;
+- (void)adjustTableViewHeightForTargetIndex:(long long)index;
 @end
 @interface AWESearchVideoFeedTableViewController : AWEAwemeDetailTableViewController
 @end
@@ -1355,6 +1373,17 @@ typedef NS_ENUM(NSUInteger, DYEdgeMode) {
 @property(nonatomic) UIView *contentView;
 - (BOOL)enableHDR;
 - (void)setVideoControllerPlaybackRate:(double)arg0;
+@property (nonatomic, strong) AWEAwemeModel *model;
+@property (nonatomic, assign) BOOL hasInlandscape;
+@property (nonatomic, strong) UIView *gradientBackgroundView;
+@property (nonatomic, copy) NSString *referString;
+- (BOOL)isInLandscapeFeedStatus;
+- (void)videoDidShrink;
+- (BOOL)isPlaying;
+- (void)play;
+- (void)pause;
+- (BOOL)shouldPreventPlay;
+- (BOOL)videoShouldPlay;
 @end
 
 @interface AWEPlayInteractionElementMaskView : UIView
@@ -2014,4 +2043,73 @@ typedef NS_ENUM(NSUInteger, DYEdgeMode) {
 
 // 顶栏选中指示线
 @interface AWEFeedMultiTabSelectedContainerView : UIView
+@end
+
+#pragma mark - 液体玻璃
+@interface UIView (DYYYGlassFlexPrivate)
+- (UIView *)_flexInteractionGestureView;
+@end
+
+@interface AWEInnerNotificationContainerView : UIView
+@property (nonatomic, strong) UIView *containerView;
+@property (nonatomic, strong) UIView *contentView;
+@property (nonatomic, strong) UIStackView *contentContainerView;
+- (void)renderModel:(id)model context:(id)context;
+- (void)viewDidDisappear:(BOOL)animated reason:(long long)reason;
+@end
+
+@interface AWEInnerPushCommonView : UIView
+@property (nonatomic, strong) UIView *leftExtraIconBackgroundView;
+@property (nonatomic, strong) UIImageView *leftExtraIcon;
+@property (nonatomic, strong) UIButton *rightActionButton;
+@property (nonatomic, strong) UIStackView *middleContentTextStackView;
+- (void)updateViewWithRequest:(id)request notificationContent:(id)content viewModel:(id)viewModel;
+@end
+
+@interface AWECommentSearchViewController : UIViewController
+- (id)obtainPanelColor;
+@end
+
+@interface AWECommentABTestSettings : NSObject
++ (BOOL)enableCommentRenderingOptimize:(id)context;
+@end
+
+#pragma mark - 液体玻璃内部视图
+
+
+@interface DYYYGlassFlexView : UIVisualEffectView
+@property (nonatomic, weak) UIView *flexSourceView;
+@end
+
+@interface DYYYTabGlassGlassTabBarProxy : NSObject <UITabBarDelegate>
+- (void)plusKeyDidTap;
+@end
+
+@interface DYYYCommentGlassCommentBarGlassView : DYYYGlassFlexView {
+    CGSize _dkSweptSize;   // 上次补扫时的容器尺寸，只在形态真的变了时再扫
+}
+@end
+
+@interface RichContentContainerViewController : UIViewController
+@property (nonatomic, readonly, strong) UIViewController *contentListViewController;  // 图文列表实现，背景渐变挂在它 view 下
+- (void)updateShrinkState:(BOOL)shrink insets:(UIEdgeInsets)insets animated:(BOOL)animated;
+@end
+
+@interface AWEKnowledgeGradientView : UIView
+@end
+
+@interface AWELivePreStream4LayerContainerView : UIView
+@property (nonatomic, strong) UIImageView *bottomDarkWatermark;     // 底部暗水印，抬升目标之一
+@property (nonatomic, readonly, strong) UIView *gradientContainerView;
+@property (nonatomic, readonly, strong) UIView *controlContainer;
+@property (nonatomic, strong) UIView *leftContainer;
+@property (nonatomic, strong) UIView *centerContainer;
+@property (nonatomic, strong) UIView *bottomContainer;
+@end
+
+@interface AWECommentFullScreenContainerViewController : UIViewController
+@end
+
+@interface AWEPlayInteractionCommentPanelController : NSObject
+- (BOOL)enableShowInnerPiPWhenFullScreen;
 @end

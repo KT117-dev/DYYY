@@ -24,8 +24,6 @@
 @class DYYYIconOptionsDialogView;
 static void showIconOptionsDialog(NSString *title, UIImage *previewImage, NSString *saveFilename, void (^onClear)(void), void (^onSelect)(void));
 
-#import "DYYYBackupPickerDelegate.h"
-#import "DYYYImagePickerDelegate.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -1237,7 +1235,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
             @"cellType" : @6,
             @"imageName" : @"ic_rectangleportraittriangle_outlined_20"},
           @{@"identifier" : @"DYYYEnableFullScreen",
-            @"title" : @"启用首页全屏",
+            @"title" : @"启用视频全屏",
             @"detail" : @"",
             @"cellType" : @6,
             @"imageName" : @"ic_fullscreen_outlined_16"}
@@ -1550,26 +1548,21 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
             @"detail" : @"0-1小数",
             @"cellType" : @26,
             @"imageName" : @"ic_user_outlined_20"},
+          @{@"identifier" : @"DYYYEnableTabBarLiquidGlass",
+            @"title" : @"启用底栏液体玻璃",
+            @"detail" : @"",
+            @"cellType" : @6,
+            @"imageName" : @"ic_module_outlined_20"},
           @{@"identifier" : @"DYYYEnableCommentBlur",
-            @"title" : @"评论区毛玻璃",
+            @"title" : @"评论区液体玻璃",
             @"detail" : @"",
             @"cellType" : @6,
             @"imageName" : @"ic_comment_outlined_20"},
           @{@"identifier" : @"DYYYEnableNotificationTransparency",
-            @"title" : @"通知栏毛玻璃",
+            @"title" : @"通知栏液体玻璃",
             @"detail" : @"",
             @"cellType" : @6,
             @"imageName" : @"ic_comment_outlined_20"},
-          @{@"identifier" : @"DYYYNotificationCornerRadius",
-            @"title" : @"通知圆角半径",
-            @"detail" : @"默认12",
-            @"cellType" : @26,
-            @"imageName" : @"ic_comment_outlined_20"},
-          @{@"identifier" : @"DYYYCommentBlurTransparent",
-            @"title" : @"毛玻璃透明度",
-            @"detail" : @"0-1小数",
-            @"cellType" : @26,
-            @"imageName" : @"ic_eye_outlined_20"},
       ];
 
       for (NSDictionary *dict in transparencySettings) {
