@@ -194,6 +194,8 @@ DYYY 可以通过远程 JSON 文件批量应用设置。默认下载地址在 `D
 
 ## 构建与打包
 
+- GitHub Actions 仅在发布 Release 时构建该标签对应的代码，上传三种 Deb 和独立 dylib 到该 Release；普通提交不触发编译。发布前请更新 `control` 中的版本号。
+
 - 默认编译 release deb，输出在 `packages/`：
 
 ```bash

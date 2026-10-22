@@ -10954,7 +10954,10 @@ static Class tabBarButtonClass = nil;
 
 - (void)setFrame:(CGRect)frame {
     CGRect adjusted = DYYYFullscreenAdjustFrame(self, frame);
-    if (CGRectIsNull(adjusted)) { %orig; return; }
+    if (CGRectIsNull(adjusted)) {
+        %orig;
+        return;
+    }
     %orig(adjusted);
 }
 
@@ -13060,6 +13063,7 @@ static const CGFloat kDYYYCommentGlassCoverMinHeight = 8.0;
 
 static char kDYYYCommentGlassSlotOriginalColorKey;     // 槽位：抖音写的底色
 static char kDYYYCommentGlassSlotGlassKey;             // 槽位：我们插的玻璃层
+static char kDYYYCommentGlassBackdropKey;              // 玻璃：独立垫在后面的白底与模糊
 static char kDYYYCommentGlassCoverOriginalColorKey;    // 遮盖层：抖音写的底色
 static char kDYYYCommentGlassGlassClearModeKey;         // 玻璃：当前 effect 是否按 Clear 构造
 static char kDYYYCommentGlassGlassMaterializingKey;     // 玻璃：已排入 materialize，防止重复排队
@@ -13235,7 +13239,7 @@ static BOOL DYYYCommentGlassIsSlotCandidate(UIView *view) {
 static void DYYYCommentGlassCollectSlotCandidates(UIView *view, NSUInteger depth, NSMutableArray<UIView *> *candidates) {
     if (depth > 4) return;
     for (UIView *subview in view.subviews) {
-        if ([subview isKindOfClass:UIVisualEffectView.class]) continue;
+        if ([subview isKindOfClass:UIVisualEffectView.class] || [subview isKindOfClass:DYYYGlassBackdropView.class]) continue;
         if (DYYYCommentGlassIsSlotCandidate(subview)) [candidates addObject:subview];
         DYYYCommentGlassCollectSlotCandidates(subview, depth + 1, candidates);
     }
@@ -13280,8 +13284,15 @@ static UIView *DYYYCommentGlassInputFieldSlot(UIView *container) {
 
 // 玻璃要垫在抖音内容之下。其他插件遍历子视图后可能改动层级，每轮校验一次，顺序对就不动。
 static void DYYYCommentGlassEnsureBackmost(UIView *slot, UIView *glass) {
-    if (slot.subviews.firstObject == glass) return;
-    [slot insertSubview:glass atIndex:0];
+    DYYYGlassBackdropView *background = objc_getAssociatedObject(glass, &kDYYYCommentGlassBackdropKey);
+    NSUInteger index = background ? 1 : 0;
+    if (background && slot.subviews.firstObject != background) [slot insertSubview:background atIndex:0];
+    if (slot.subviews.count <= index || slot.subviews[index] != glass) [slot insertSubview:glass atIndex:index];
+    if (background) {
+        if (!CGRectEqualToRect(background.frame, glass.frame)) background.frame = glass.frame;
+        background.hidden = glass.hidden;
+        if (@available(iOS 26.0, *)) background.cornerConfiguration = glass.cornerConfiguration;
+    }
 }
 
 typedef NS_ENUM(NSUInteger, DYYYCommentGlassGlassShape) {
@@ -13332,11 +13343,10 @@ static UIVisualEffectView *DYYYCommentGlassMakeGlassShell(DYYYCommentGlassGlassS
     // 胶囊已有输入栏的底层，额外白底与模糊只铺一次。
     if (shape != DYYYCommentGlassGlassShapeField) {
         DYYYGlassBackdropView *background = [[DYYYGlassBackdropView alloc] initWithSettingsPrefix:@"DYYYCommentGlass"];
-        background.frame = glass.contentView.bounds;
         background.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         background.userInteractionEnabled = NO;
-        glass.contentView.clipsToBounds = YES;
-        [glass.contentView addSubview:background];
+        // 两个 effect 独立合成，避免模糊在玻璃首次 materialize 时跟着重建。
+        objc_setAssociatedObject(glass, &kDYYYCommentGlassBackdropKey, background, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     return glass;
 }
@@ -13350,7 +13360,6 @@ static void DYYYCommentGlassApplyGlassShape(UIVisualEffectView *glass, UIView *s
     if (shape == DYYYCommentGlassGlassShapeBarFlat) {
         glass.cornerConfiguration =
             [UICornerConfiguration configurationWithUniformRadius:[UICornerRadius fixedRadius:0.0]];
-        glass.contentView.cornerConfiguration = glass.cornerConfiguration;
         return;
     }
     // 输入框：跟随抖音写在槽位上的圆角，不写死 capsule。抖音恒写 18——常驻 36pt 高时它等于半高、
@@ -13361,7 +13370,6 @@ static void DYYYCommentGlassApplyGlassShape(UIVisualEffectView *glass, UIView *s
         glass.cornerConfiguration = radius > 0.0
             ? [UICornerConfiguration configurationWithUniformRadius:[UICornerRadius fixedRadius:radius]]
             : [UICornerConfiguration capsuleConfiguration];
-        glass.contentView.cornerConfiguration = glass.cornerConfiguration;
         return;
     }
 
@@ -13372,7 +13380,6 @@ static void DYYYCommentGlassApplyGlassShape(UIVisualEffectView *glass, UIView *s
         [UICornerConfiguration configurationWithUniformTopRadius:top
                                                 bottomLeftRadius:nil
                                                bottomRightRadius:nil];
-    glass.contentView.cornerConfiguration = glass.cornerConfiguration;
 }
 
 // 仅在 effect 仍为 nil 时写入，让系统 materialize 动画跑一次。
@@ -13448,7 +13455,7 @@ static void DYYYCommentGlassClearCoverColor(UIView *view) {
 static void DYYYCommentGlassWalkClearCovers(UIView *view, UIView *slot, NSUInteger depth, NSUInteger maxDepth) {
     if (depth > maxDepth) return;
     for (UIView *sub in view.subviews) {
-        if ([sub isKindOfClass:UIVisualEffectView.class]) continue;
+        if ([sub isKindOfClass:UIVisualEffectView.class] || [sub isKindOfClass:DYYYGlassBackdropView.class]) continue;
         if (DYYYCommentGlassIsCoverCandidate(sub, slot)) DYYYCommentGlassClearCoverColor(sub);
         if ([sub isKindOfClass:UILabel.class] || [sub isKindOfClass:UIImageView.class]) continue;
         DYYYCommentGlassWalkClearCovers(sub, slot, depth + 1, maxDepth);
@@ -13503,6 +13510,7 @@ static void DYYYCommentGlassDetachGlass(UIView *slot) {
     UIColor *original = objc_getAssociatedObject(slot, &kDYYYCommentGlassSlotOriginalColorKey);
     if (!glass && !original) return;
 
+    [objc_getAssociatedObject(glass, &kDYYYCommentGlassBackdropKey) removeFromSuperview];
     [glass removeFromSuperview];
     if (original) slot.backgroundColor = original;
 
@@ -13550,11 +13558,14 @@ static void DYYYCommentGlassSyncPanelGlassHeight(void) {
     // （见 docs/share-panel-liquid-glass.md 的 beta4 一节）。
     BOOL entirelyCovered = covered && coverTop <= 0.5;
     if (glass.hidden != entirelyCovered) glass.hidden = entirelyCovered;
+    UIView *background = objc_getAssociatedObject(glass, &kDYYYCommentGlassBackdropKey);
+    background.hidden = entirelyCovered;
     if (entirelyCovered) return;
 
     CGRect target = slot.bounds;
     if (covered) target.size.height = coverTop;
     if (!CGRectEqualToRect(glass.frame, target)) glass.frame = target;
+    if (background && !CGRectEqualToRect(background.frame, target)) background.frame = target;
 }
 
 #pragma mark - 折叠提示条

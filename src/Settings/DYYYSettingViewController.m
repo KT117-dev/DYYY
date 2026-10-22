@@ -14,19 +14,17 @@
 - (instancetype)initWithFrame:(CGRect)frame style:(UITableViewStyle)style {
     if ((self = [super initWithFrame:frame style:style])) {
         _groupBackgrounds = [NSMutableDictionary dictionary];
-        UIView *mask = [UIView new];
-        mask.backgroundColor = UIColor.blackColor;
-        mask.layer.cornerRadius = DYYYSettingsCornerRadius;
-        mask.layer.cornerCurve = kCACornerCurveContinuous;
+        // 不给玻璃的祖先设置 maskView，避免材质被转成透明的离屏结果。
+        self.layer.cornerRadius = DYYYSettingsCornerRadius;
+        self.layer.cornerCurve = kCACornerCurveContinuous;
+        self.clipsToBounds = YES;
         if (@available(iOS 26.0, *))
-            mask.cornerConfiguration = [UICornerConfiguration configurationWithRadius:[UICornerRadius fixedRadius:DYYYSettingsCornerRadius]];
-        self.maskView = mask;
+            self.cornerConfiguration = [UICornerConfiguration configurationWithRadius:[UICornerRadius fixedRadius:DYYYSettingsCornerRadius]];
     }
     return self;
 }
 - (void)layoutSubviews {
     [super layoutSubviews];
-    CGRect clipFrame = self.bounds;
     NSMutableSet<NSNumber *> *sections = [NSMutableSet set];
     for (NSIndexPath *path in self.indexPathsForVisibleRows) {
         NSNumber *section = @(path.section);
@@ -65,9 +63,7 @@
         UITableViewCell *cell = [self cellForRowAtIndexPath:path];
         CGRect row = [self convertRect:cell.bounds fromView:cell];
         background.frame = CGRectMake(CGRectGetMinX(row), CGRectGetMinY(first), CGRectGetWidth(row), CGRectGetMaxY(last) - CGRectGetMinY(first));
-        clipFrame = CGRectMake(CGRectGetMinX(row), CGRectGetMinY(self.bounds), CGRectGetWidth(row), CGRectGetHeight(self.bounds));
     }
-    self.maskView.frame = clipFrame;
     for (NSNumber *section in self.groupBackgrounds.allKeys) {
         if (![sections containsObject:section]) {
             [self.groupBackgrounds[section] removeFromSuperview];

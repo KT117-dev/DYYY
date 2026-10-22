@@ -39,8 +39,11 @@ CGFloat const DYYYSettingsCornerRadius = 35;
 @implementation DYYYSettingsOverlayController
 - (CGRect)contentFrame {
     CGRect bounds = self.view.bounds;
-    CGFloat top = self.view.safeAreaInsets.top + 8;
-    CGRect frame = CGRectMake(bounds.size.width * 0.035, top, bounds.size.width * 0.93, CGRectGetMaxY(bounds) - top);
+    UIEdgeInsets safeArea = self.view.safeAreaInsets;
+    CGFloat availableWidth = MAX(0, bounds.size.width - safeArea.left - safeArea.right);
+    CGFloat top = CGRectGetMinY(bounds) + safeArea.top + 8;
+    CGRect frame = CGRectMake(CGRectGetMinX(bounds) + safeArea.left + availableWidth * 0.035,
+                             top, availableWidth * 0.93, MAX(0, CGRectGetMaxY(bounds) - top));
     if (!CGRectIsEmpty(self.keyboardFrame)) {
         CGRect keyboard = [self.view convertRect:self.keyboardFrame fromView:nil];
         if (CGRectIntersectsRect(frame, keyboard)) {
@@ -102,18 +105,24 @@ CGFloat const DYYYSettingsCornerRadius = 35;
 }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
-    if (@available(iOS 26.0, *)) {
-        CGRect frame = [self.view convertRect:self.tabBar.bounds fromView:self.tabBar];
-        // 底栏可见边缘比主容器两侧各内收 8 点。
-        frame.origin.x = CGRectGetMinX(self.view.bounds) - 12;
-        frame.size.width = self.view.bounds.size.width + 24;
-        CGRect target = [self.tabBar.superview convertRect:frame fromView:self.view];
-        if (!CGRectEqualToRect(self.tabBar.frame, target))
-            self.tabBar.frame = target;
-    }
     CGRect bar = [self.view convertRect:self.tabBar.bounds fromView:self.tabBar];
     CGRect content = self.view.bounds;
-    content.size.height = MAX(0, MIN(content.size.height, CGRectGetMinY(bar) - 16));
+    // 顶部标签栏、隐藏或尚未定位的底栏不能把主玻璃高度压成零。
+    BOOL bottomBar = !self.tabBar.hidden && !CGRectIsEmpty(bar)
+        && CGRectIntersectsRect(content, bar) && CGRectGetMinY(bar) > CGRectGetMidY(content);
+    if (@available(iOS 26.0, *)) {
+        if (bottomBar) {
+            CGRect frame = bar;
+            // 底栏可见边缘比主容器两侧各内收 8 点。
+            frame.origin.x = CGRectGetMinX(self.view.bounds) - 12;
+            frame.size.width = self.view.bounds.size.width + 24;
+            CGRect target = [self.tabBar.superview convertRect:frame fromView:self.view];
+            if (!CGRectEqualToRect(self.tabBar.frame, target))
+                self.tabBar.frame = target;
+        }
+    }
+    if (bottomBar)
+        content.size.height = MAX(0, MIN(content.size.height, CGRectGetMinY(bar) - CGRectGetMinY(content) - 16));
     if (!CGRectEqualToRect(self.glass.frame, content)) {
         self.glass.frame = content;
         [self.selectedViewController.view setNeedsLayout];

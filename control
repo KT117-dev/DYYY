@@ -1,7 +1,7 @@
 Package: dyyy
 Name: DYYY
 Version: 2.3.0
-Architecture: iphoneos-arm64e
+Architecture: iphoneos-arm64
 Maintainer: KT117
 Description: 基于DYYY的二次开发项目，感谢DYYY作者们提供的开源代码
 Depends: mobilesubstrate

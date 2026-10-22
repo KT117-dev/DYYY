@@ -50,7 +50,7 @@
     self.whiteView.backgroundColor = [UIColor colorWithWhite:1 alpha:white];
     if (self.blurIntensity != blur) {
         self.blurIntensity = blur;
-        self.blurAnimator.fractionComplete = blur;
+        [self updateBlurEffect];
     }
 }
 - (instancetype)initWithWhiteOpacity:(CGFloat)whiteOpacity blurIntensity:(CGFloat)blurIntensity {
@@ -61,6 +61,8 @@
         self.blurView.frame = self.bounds;
         self.blurView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         self.blurView.userInteractionEnabled = NO;
+        self.blurView.clipsToBounds = YES;
+        self.blurView.hidden = blurIntensity <= 0;
         [self addSubview:self.blurView];
         UIView *white = [[UIView alloc] initWithFrame:self.bounds];
         self.whiteView = white;
@@ -68,6 +70,7 @@
         white.backgroundColor = [UIColor colorWithWhite:1 alpha:whiteOpacity];
         white.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         white.userInteractionEnabled = NO;
+        white.clipsToBounds = YES;
         [self addSubview:white];
     }
     return self;
@@ -77,14 +80,35 @@
     [self.blurAnimator stopAnimation:YES];
     self.blurAnimator = nil;
     self.blurView.effect = nil;
-    if (!self.window)
+    [self updateBlurEffect];
+}
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    [self updateBlurEffect];
+}
+- (void)setCornerConfiguration:(UICornerConfiguration *)configuration API_AVAILABLE(ios(26.0)) {
+    [super setCornerConfiguration:configuration];
+    self.blurView.cornerConfiguration = configuration;
+    self.whiteView.cornerConfiguration = configuration;
+}
+- (void)updateBlurEffect {
+    // 入窗可能早于首次布局；零尺寸或强度为零时不创建效果，后续布局再补齐。
+    if (!self.window || CGRectIsEmpty(self.bounds) || self.blurIntensity <= 0) {
+        [self.blurAnimator stopAnimation:YES];
+        self.blurAnimator = nil;
+        self.blurView.effect = nil;
+        self.blurView.hidden = YES;
         return;
-    UIVisualEffectView *blur = self.blurView;
-    self.blurAnimator = [[UIViewPropertyAnimator alloc] initWithDuration:1 curve:UIViewAnimationCurveLinear animations:^{
-        blur.effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
-    }];
-    self.blurAnimator.pausesOnCompletion = YES;
-    self.blurAnimator.fractionComplete = self.blurIntensity;
+    }
+    self.blurView.hidden = NO;
+    if (!self.blurAnimator) {
+        UIVisualEffectView *blur = self.blurView;
+        self.blurAnimator = [[UIViewPropertyAnimator alloc] initWithDuration:1 curve:UIViewAnimationCurveLinear animations:^{
+            blur.effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
+        }];
+        self.blurAnimator.pausesOnCompletion = YES;
+    }
+    if (self.blurAnimator.fractionComplete != self.blurIntensity) self.blurAnimator.fractionComplete = self.blurIntensity;
 }
 - (void)dealloc {
     if (self.changeToken)
@@ -95,13 +119,7 @@
 
 @implementation DYYYGlassBackgroundView
 - (instancetype)initWithCornerRadius:(CGFloat)radius settingsPrefix:(NSString *)prefix {
-    UIVisualEffect *glass = nil;
-    if (@available(iOS 26.0, *)) {
-        UIGlassEffect *effect = [UIGlassEffect effectWithStyle:UIGlassEffectStyleClear];
-        effect.interactive = YES;
-        glass = effect;
-    }
-    if ((self = [super initWithEffect:glass])) {
+    if ((self = [super initWithEffect:nil])) {
         self.layer.cornerRadius = radius;
         self.layer.cornerCurve = kCACornerCurveContinuous;
         self.clipsToBounds = YES;
@@ -114,6 +132,17 @@
         [self.contentView addSubview:background];
     }
     return self;
+}
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    if (@available(iOS 26.0, *)) {
+        // 零尺寸创建材质可能只有透明外壳，先让布局确定实际大小。
+        if (!self.effect && !CGRectIsEmpty(self.bounds)) {
+            UIGlassEffect *effect = [UIGlassEffect effectWithStyle:UIGlassEffectStyleClear];
+            effect.interactive = YES;
+            self.effect = effect;
+        }
+    }
 }
 @end
 
